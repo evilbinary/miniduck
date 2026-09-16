@@ -22,6 +22,10 @@
 | PyYAML | 6.x（`pip install pyyaml`） | 读 `body/robot.yaml` |
 | **yc 编译器**（必需） | 兄弟目录 `../yac` | 编译执行 `mind/**/*.yac`：ANF → LIR → 机器码 |
 | yac 解释器（可选） | 同上 | 仅在需要 ANF/CPS **双解释器互证**时使用 |
+| MuJoCo（可选） | `python -m pip install mujoco` | `check_physics.py` 物理健全性检查、后续仿真后端 |
+
+> 注意别用错解释器：如果 `pip` 和 `python` 指向不同环境（例如 Anaconda 的 pip +
+> Windows Store 的 python），请用 `python -m pip install mujoco` 安装到实际运行的那一个。
 
 先构建一次（`make` 会同时产出 `yac` 与 `yc`）：
 
@@ -57,6 +61,9 @@ python body/tools/gen.py
 # 3) 校验生成产物（URDF/MJCF 结构 + yc 编译执行 + LIR 不变量）
 python body/tools/verify_gen.py
 
+# 3.5) 物理健全性检查（需 MuJoCo；结构校验抓不到的问题在这里暴露）
+python body/tools/check_physics.py
+
 # 4) 纯函数核心冒烟测试（yc 编译执行；--both 覆盖 ANF→CPS→ANF 往返）
 ../yac/yc.exe --both mind/tests/robotd_core_smoke.yac           # 或 "$YC_BIN"
 ../yac/yc.exe --verify-lir mind/tests/robotd_core_smoke.yac     # 可选：LIR 不变量
@@ -74,6 +81,7 @@ cd train/envs && python duck_env.py
 cd /path/to/miniduck && \
 python body/tools/gen.py && \
 python body/tools/verify_gen.py && \
+python body/tools/check_physics.py > /dev/null && \
 "$YC_BIN" --both mind/tests/robotd_core_smoke.yac > /dev/null && \
 python train/envs/tests/obs_parity.py && \
 python -c "import sys; sys.path.insert(0,'train/envs'); from duck_env import StandEnv; StandEnv('miniduck-S').reset()" && \
@@ -99,7 +107,8 @@ PASS  [miniduck-S] obs 维度 37，yc 编译执行结果与 Python 逐位一致
 body/                 「身体」硬件与建模
   robot.yaml          ★ 关节定义单一来源（DOF/限位/零位/舵机 ID/几何）
   tools/gen.py        robot.yaml → URDF/MJCF/joints.yac/consts.yac（含 10 条校验）
-  tools/verify_gen.py 生成产物回归测试
+  tools/verify_gen.py 生成产物回归测试（结构层）
+  tools/check_physics.py MuJoCo 物理健全性检查（质量账/站立高度/落地）
   urdf/  mjcf/        生成物（不入库，由 gen.py 重建）
 mind/                 「心智」真机软件（yac，运行在 yiyiya OS）
   spec/               ★ 规范单一来源：obs / reward / action / randomize / ppo

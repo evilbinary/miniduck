@@ -271,9 +271,14 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         '  <default>',
         '    <joint damping="0.05" armature="0.01"/>',
         f'    <position kp="{kp}" kv="0.5"/>',
-        '    <geom type="capsule" size="0.008" density="800"/>',
+        # 占位外形：capsule 需要 size = (radius, half-length) 两个分量，
+        # 只给一个会被 MuJoCo 拒绝（size 1 must be positive）。
+        # TBD: 由 CAD 回填各连杆真实尺寸后替换。
+        '    <geom type="capsule" size="0.008 0.012" density="800"/>',
         '  </default>',
         '  <worldbody>',
+        # plane 的 size = (半长, 半宽, 网格间距)，三分量
+        '    <geom name="floor" type="plane" size="5 5 0.1" condim="3"/>  <!-- 训练地面 -->',
     ]
 
     def emit_body(link_name: str, indent: int) -> None:
@@ -285,6 +290,10 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         if pj:
             by_name = {j["name"]: j for j in robot["joints"]}
             pos = by_name[pj].get("xyz") or pos
+        else:
+            # 根连杆：初始高度取几何里的站立基座高度（与 reward 的 h_ref 同源），
+            # 避免机器人出生在地面之下
+            pos = [0.0, 0.0, float(robot.get("geometry", {}).get("base_height_m", 0.1))]
         out.append(f'{pad}<body name="{link_name}" pos="{pos[0]} {pos[1]} {pos[2]}">')
         if pj is None:
             out.append(f"{pad}  <freejoint/>")

@@ -68,6 +68,9 @@ robots:
       obs_dim: 61                  # 3+3+3+N+N+N+2+2+1+3+2, N=14
       act_dim: 14
     # 连杆树：torso 为根；parent_joint 为连接本连杆到其父连杆的关节
+    # mass_g 约定：**只算连杆结构件，不含舵机**。舵机质量按 servo_profiles.weight_g
+    #              × 关节数单独计入整机预算（check_physics.py 会做质量账核对）。
+    #              若某 link 的 mass_g 已含其舵机，请在注释中标注，避免重复计入。
     links:
       - {name: torso,              parent_joint: null,           mass_g: 150}   # TBD
       - {name: L_hip_yaw_link,     parent_joint: L_hip_yaw,      mass_g: 5}     # TBD
