@@ -5,8 +5,10 @@
 --       为 M4 真机落地扫清语言层面障碍。边界原语（io_*/st_*）由宿主提供，
 --       此处不出现，只测可用 yac 核心原语表达的纯逻辑部分。
 --
--- 运行：yac mind/tests/robotd_core_smoke.yac
---       yac --both mind/tests/robotd_core_smoke.yac   （ANF/CPS 一致性）
+-- 运行（生产路径用 yc 编译器，无参数只编译不运行，须带 --both/--cps）：
+--   yc --both mind/tests/robotd_core_smoke.yac     （ANF→CPS→ANF 后编译执行）
+--   yc --cps  mind/tests/robotd_core_smoke.yac
+--   yc --verify-lir mind/tests/robotd_core_smoke.yac   （校验 LIR 不变量）
 -- =====================================================================
 
 -- ---------------- 被验证的实现（与 DESIGN 6.1 一致） ----------------

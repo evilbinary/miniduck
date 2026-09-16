@@ -6,16 +6,18 @@
     URDF    XML 良构；link/joint 数量与 robot.yaml 一致；parent/child 均可解析
     MJCF    XML 良构；body 数量一致；hinge 关节数量一致；执行器数 = 非被动关节数
             （注意排除 <default> 块中的模板元素）
-    yac     生成的两个 .yac 文件能被真实 yac 解释器执行（需 yac.exe）
+    yc      生成的两个 .yac 文件能被 **yc 编译器**编译执行，且通过 LIR 不变量校验
+            （yac 是解释器，生产路径用 yc：ANF → LIR → 机器码）
 
 用法：
-    python body/tools/verify_gen.py            # 自动探测 ../yac/yac.exe
-    YAC_BIN=/path/to/yac python body/tools/verify_gen.py
+    python body/tools/verify_gen.py            # 自动探测 ../yac/yc[.exe]
+    YC_BIN=/path/to/yc python body/tools/verify_gen.py
 
 返回 0 = 全部通过；1 = 有失败项。
 """
 
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -25,7 +27,16 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
-YAC_BIN = os.environ.get("YAC_BIN") or str(ROOT.parent / "yac" / "yac.exe")
+def _default_yc() -> str:
+    """按平台探测兄弟目录里的 yc 编译器。"""
+    for name in ("yc.exe", "yc"):
+        p = ROOT.parent / "yac" / name
+        if p.exists():
+            return str(p)
+    return str(ROOT.parent / "yac" / "yc.exe")
+
+
+YC_BIN = os.environ.get("YC_BIN") or os.environ.get("YAC_BIN") or _default_yc()
 
 FAILS: list[str] = []
 OKS: list[str] = []
@@ -104,21 +115,28 @@ def main() -> int:
         ROOT / gen["spec_joints"]["target"],
         ROOT / gen["runtime_consts"]["target"],
     ]
-    yac_available = Path(YAC_BIN).exists()
+    yac_available = Path(YC_BIN).exists()
     if not yac_available:
-        fail(f"找不到 yac 解释器：{YAC_BIN}（可用 YAC_BIN 指定）")
+        fail(f"找不到 yc 编译器：{YC_BIN}（可用 YC_BIN 指定；注意 yc 无参数只编译不运行）")
     else:
         for f in yac_files:
-            r = subprocess.run([YAC_BIN, str(f)], capture_output=True, text=True)
-            last = (r.stdout.strip().splitlines() or [""])[-1]
+            # --both：ANF→CPS→ANF 往返后编译执行，额外覆盖 CPS 转换路径
+            r = subprocess.run([YC_BIN, "--both", str(f)], capture_output=True, text=True)
             check(
-                r.returncode == 0 and last == "()",
-                f"{f.relative_to(ROOT)} 可被 yac 执行（rc={r.returncode}, out={last!r}）",
+                r.returncode == 0,
+                f"{f.relative_to(ROOT)} yc --both 编译并执行通过（覆盖 CPS 往返路径）",
             )
-        # ANF/CPS 一致性
-        for f in yac_files:
-            r = subprocess.run([YAC_BIN, "--both", str(f)], capture_output=True, text=True)
-            check(r.returncode == 0, f"{f.relative_to(ROOT)} ANF/CPS 双解释器一致")
+            # --verify-lir：校验 LIR 不变量（docs/LIR.md §8）
+            # 输出形如 "verify-lir: ok -- 0 error(s), 14 warning(s)"
+            # 注意：不能子串匹配 "error"，摘要行自身就含 "0 error(s)"
+            r2 = subprocess.run([YC_BIN, "--verify-lir", str(f)], capture_output=True, text=True)
+            out = (r2.stdout or "") + (r2.stderr or "")
+            m = re.search(r"(\d+)\s+error", out)
+            n_err = int(m.group(1)) if m else -1
+            check(
+                r2.returncode == 0 and n_err == 0,
+                f"{f.relative_to(ROOT)} LIR 不变量校验通过（error={n_err}）",
+            )
 
     for m in OKS:
         print(f"PASS  {m}")

@@ -333,7 +333,8 @@ void policy_run(const float obs[N_IN], float act[N_OUT]) {
 > 10⁷ 层不爆栈）；没有可变状态，`last_action` / 相位等全部作为参数显式传递；
 > 没有内建 IO，所有副作用隔离在带 `io_` / `st_` 前缀的**宿主扩展原语**里
 > （由 yiyiya OS 运行时提供）。纯函数核心（观测构建、安全层、动作映射）
-> 不含任何副作用，可用 `yac --both` 做 ANF/CPS 双解释器一致性校验。
+> 不含任何副作用，可用 `yc --both`（ANF→CPS→ANF 后编译执行）与 `yc --verify-lir`
+> （LIR 不变量）做机器码路径校验。注意 **yc 无参数只编译不运行**，执行须带 `--both`/`--cps`。
 > 向量统一用不可变 list 表示（L 版 14 维腿关节，S 版 6 维）；
 > 步态相位用旋转递推，避免三角原语。
 
@@ -477,7 +478,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 
 > **实现注记**：真实 `robotd` 中，外层 forever 循环、看门狗与总线驱动位于
 > yiyiya OS 宿主运行时；yac 描述的是其中**确定性的控制核心**。这样切分后：
-> - 纯函数核心可离线用 ANF/CPS 双解释器校验，也可在 `verify/` 交叉验证中
+> - 纯函数核心可离线用 `yc` 编译执行并校验 LIR 不变量，也可在 `verify/` 交叉验证中
 >   直接复用同一份 `build_obs` / `safe_joint`；
 > - 相位递推、限位截断等只依赖标量算术，完全落在 yac 现有原语能力内；
 > - `io_policy_run` 内部调自研 MLP 前向 runtime（见 5.3，< 0.1 ms），yac 不自己算矩阵。
@@ -506,7 +507,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 | 阶段 | 内容 | 产出 |
 |------|------|------|
 | M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
-| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（ANF/CPS 一致）与 **obs 双侧对拍**均通过；MuJoCo 后端接入 |
+| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）与 **obs 双侧对拍**均通过；MuJoCo 后端接入 |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
 | M4 | 真机硬件装配 + robotd 50 Hz 循环（yac） | 悬挂测试通过 |
@@ -556,7 +557,7 @@ miniduck/
 │   ├── policy/                  # 部署端推理：policy_blob 权重 + 自研 MLP runtime（C）
 │   ├── mindd/                   # 高层意图（vx, vy, yaw_rate）
 │   ├── updaterd/                # OTA 打包 + 回滚槽位
-│   └── tests/                   # 纯函数核心冒烟测试（ANF/CPS 一致）、安全层单测
+│   └── tests/                   # 纯函数核心冒烟测试（yc 编译执行）、安全层单测
 │       └── robotd_core_smoke.yac
 │
 ├── train/                       # 训练侧（Python + GPU，只在训练 PC 上）

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""train/envs/tests/obs_parity.py — Python 与 yac 两侧 build_obs 的逐位对拍。
+"""train/envs/tests/obs_parity.py — Python 与 yc（编译执行）两侧 build_obs 的逐位对拍。
 
 这是 M3.5 门禁的提前版：在训练开始前就验证「观测构建」在两端完全一致。
 
@@ -9,11 +9,12 @@
     2. Python 侧用 StandEnv.build_obs 算出观测；
     3. 动态生成一个 yac 程序：同样的夹具 + DESIGN 6.1 的 build_obs，
        逐项打印观测分量；
-    4. 用真实 yac 解释器执行，解析输出，与 Python 结果逐个比对。
+    4. 用 **yc 编译器**编译执行（yc 无参数只编译不运行，须带 --both/--cps），
+       解析输出，与 Python 结果逐个比对。
 
 用法：
     python train/envs/tests/obs_parity.py            # L 与 S 两版都跑
-    YAC_BIN=/path/to/yac python train/envs/tests/obs_parity.py
+    YC_BIN=/path/to/yc python train/envs/tests/obs_parity.py
 """
 
 from __future__ import annotations
@@ -28,7 +29,15 @@ sys.path.insert(0, str(ROOT / "train" / "envs"))
 
 from duck_env import DuckState, StandEnv  # noqa: E402
 
-YAC_BIN = os.environ.get("YAC_BIN") or str(ROOT.parent / "yac" / "yac.exe")
+def _default_yc() -> str:
+    for name in ("yc.exe", "yc"):
+        p = ROOT.parent / "yac" / name
+        if p.exists():
+            return str(p)
+    return str(ROOT.parent / "yac" / "yc.exe")
+
+
+YC_BIN = os.environ.get("YC_BIN") or os.environ.get("YAC_BIN") or _default_yc()
 OUT_DIR = ROOT / "train" / "runs" / "parity"          # gitignored
 
 YAC_BUILD_OBS = """
@@ -143,10 +152,10 @@ def run_one(robot: str) -> bool:
     prog = OUT_DIR / f"obs_parity_{robot}.yac"
     gen_yac_program(args, dim, prog)
 
-    if not Path(YAC_BIN).exists():
-        print(f"FAIL  [{robot}] 找不到 yac 解释器：{YAC_BIN}")
+    if not Path(YC_BIN).exists():
+        print(f"FAIL  [{robot}] 找不到 yc 编译器：{YC_BIN}")
         return False
-    r = subprocess.run([YAC_BIN, str(prog)], capture_output=True, text=True)
+    r = subprocess.run([YC_BIN, "--both", str(prog)], capture_output=True, text=True)
     nums: list[float] = []
     for line in r.stdout.splitlines():
         line = line.strip()
@@ -177,7 +186,7 @@ def run_one(robot: str) -> bool:
         ok = False
     else:
         print(
-            f"PASS  [{robot}] obs 维度 {dim}，yac 与 Python 逐位一致"
+            f"PASS  [{robot}] obs 维度 {dim}，yc 编译执行结果与 Python 逐位一致"
             f"（顺序敏感夹具 1..{dim}）"
         )
     return ok
