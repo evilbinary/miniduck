@@ -523,7 +523,7 @@ loop(0, stance_pose, 1.0, 0.0, 0)  -- 从静态站立姿态起步；相位初始
 | 阶段 | 内容 | 产出 |
 |------|------|------|
 | M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
-| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）、**obs 双侧对拍**、**MuJoCo 物理健全性检查**均通过；**MuJoCo 后端接入**，静态标称姿态由 `solve_stance.py` 求解（零动作零动作可稳站 4 s） |
+| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）、**obs 双侧对拍**、**MuJoCo 物理健全性检查**均通过；**MuJoCo 后端接入**，静态标称姿态由 `solve_stance.py` 求解（零动作可稳站 4 s） |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
 | M4 | 真机硬件装配 + robotd 50 Hz 循环（yac） | 悬挂测试通过 |
