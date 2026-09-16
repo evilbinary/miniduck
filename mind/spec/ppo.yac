@@ -1,0 +1,50 @@
+-- =====================================================================
+-- mind/spec/ppo.yac — 训练超参「单一来源」
+-- 约束同 obs.yac：仅 let 绑定 + 字面量，无副作用。
+--
+-- 放在 spec/ 而非 train/ 的原因：日志、导出元数据、复现实验
+-- 都引用同一份超参，避免"论文里的数字和代码里的不一样"。
+-- =====================================================================
+
+-- [参数, 值, 说明]
+let ppo = [
+  ["envs",              4096,     "并行环境数（MJX/Warp）"],
+  ["steps_per_env",     24,       "每次 rollout 步数"],
+  ["mini_batch_size",   4096,     "小批大小"],
+  ["update_epochs",     5,        "每批数据复用轮数"],
+  ["clip_range",        0.2,      "PPO 裁剪范围"],
+  ["gamma",             0.99,     "折扣因子"],
+  ["lambda",            0.95,     "GAE λ（优势估计）"],
+  ["entropy_coef",      0.01,     "熵正则"],
+  ["value_loss_coef",   0.5,      "价值损失权重"],
+  ["learning_rate",     0.0003,   "初始学习率"],
+  ["schedule",          "cosine", "学习率调度"],
+  ["max_grad_norm",     0.5,      "梯度裁剪"]
+] in
+
+-- 版本差异：S 版自由度更少、网络更小，训练更快
+let version_overrides = [
+  ["miniduck-L", [["envs", 4096], ["mini_batch_size", 4096], ["est_wall_clock", "1-2 h @ A100/4090"]]],
+  ["miniduck-S", [["envs", 2048], ["mini_batch_size", 2048], ["est_wall_clock", "TBD，预计 < 1 h"]]]
+] in
+
+-- 网络结构（导出的 policy_blob 维度必须与此一致）
+let network = [
+  ["arch",              "mlp"],
+  ["hidden",            [256, 256]],      -- TBD: 按 S 版可缩到 [128, 128]
+  ["activation",        "tanh"],
+  ["output_activation", "tanh"],          -- 保证动作范围 [-1,1]（见 DESIGN 5.3）
+  ["obs_normalization", "baked_into_export"],
+  ["onnx_output_name",  "target_pos"]
+] in
+
+-- 复现与产物
+let run_meta = [
+  ["seed_count",        3,        "至少 3 个种子，取中位表现"],
+  ["save_every_updates", 50],
+  ["export_artifacts",  ["policy.onnx", "policy.blob", "spec.snapshot.json"]],
+  ["spec_snapshot",     "训练时把 spec/ 全量快照进 run 目录，保证可追溯"]
+] in
+
+-- 顶层尾表达式：保持纯表达式语义，无副作用
+()

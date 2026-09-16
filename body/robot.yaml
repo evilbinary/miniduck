@@ -1,0 +1,137 @@
+# =====================================================================
+# body/robot.yaml — miniduck 关节定义「单一来源」(Single Source of Truth)
+#
+# 本文件是以下内容的唯一出处，其余产物全部由它生成或引用：
+#   1) body/urdf/*.urdf     训练仿真用（生成物，不入库）
+#   2) body/mjcf/*.xml      MuJoCo 用（生成物，不入库）
+#   3) mind/spec/joints     yac 侧关节映射表（生成物）
+#   4) 真机 robotd 的 joint_ids / default_pos / leg_lo / leg_hi / safe_pose
+#
+# 修改本文件 = 修改机器人的定义。任何一端的手改都会导致 sim2real 漂移。
+#
+# TODO(M1): tools/gen 生成器（yaml → urdf/mjcf/joints.yac）
+# TODO(M1): 装配标定后回填 zero_offset / safe_pose / 实测限位
+# 标注 TBD 的数值为占位，需实测或在 M1 标定后确认。
+# =====================================================================
+
+version: 0.1.0
+updated: 2026-09-16
+
+# ---------------- 全局约定 ----------------
+conventions:
+  angle_unit: rad                  # 全部角度统一 rad
+  positive_axis: right-hand        # 右手定则，绕轴正向
+  zero_pose: 站立中立位             # 出厂零位 = 装配标定的中立姿态
+  id_order: 总线 ID 升序            # 也是 obs/action 向量的顺序依据
+  sign_check: 悬挂测试逐关节确认     # 每个关节的正方向必须人工确认一次（M4）
+
+# ---------------- 舵机规格档 ----------------
+# 一个型号一份档案；关节只引用名称，避免逐关节重复填写
+servo_profiles:
+  xl330_m077:
+    model: XL330-M077-T
+    protocol: dynamixel2
+    baud: 1000000                  # TBD: 实机确认
+    weight_g: 23
+    stall_torque_nm: 0.5
+    ticks_per_rev: 4096
+    pos_unit: rad
+    temp_warn_c: 70
+    load_max: 0.9                  # 归一化负载阈值（对应 6.2 的"持续超阈值"）
+  sts3032:
+    model: STS3032
+    protocol: feetech_scs
+    baud: 1000000                  # TBD: 见 DESIGN 3.3 总线带宽核算
+    weight_g: 12                   # TBD: 待实测确认（DESIGN 3.2）
+    stall_torque_nm: 0.44          # 4.5 kg·cm
+    ticks_per_rev: 4096
+    pos_unit: rad
+    temp_warn_c: 70
+    load_max: 0.9
+    size_mm: [23.2, 12.1, 28.5]
+
+# ---------------- 机型 ----------------
+# 两版共用同一软件栈，仅关节分配与舵机档不同（见 DESIGN 3.0）
+robots:
+
+  # ========== miniduck-L：大型版，14 DOF 全给腿 ==========
+  miniduck-L:
+    servo: xl330_m077
+    policy:
+      leg_joints: [L_hip_yaw, L_hip_roll, L_hip_pitch, L_knee_pitch, L_ankle_pitch, L_ankle_roll, L_toe,
+                   R_hip_yaw, R_hip_roll, R_hip_pitch, R_knee_pitch, R_ankle_pitch, R_ankle_roll, R_toe]
+      obs_dim: 61                  # 3+3+3+N+N+N+2+2+1+3+2, N=14
+      act_dim: 14
+    joints:
+      # ---- 左腿 (7) ----
+      - {name: L_hip_yaw,     id: 1,  role: leg, parent: torso,  axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0}
+      - {name: L_hip_roll,    id: 2,  role: leg, parent: torso,  axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0}
+      - {name: L_hip_pitch,   id: 3,  role: leg, parent: torso,  axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.0,  zero_offset: 0.0}
+      - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh, axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.60, zero_offset: 0.0}
+      - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: 0.0,  zero_offset: 0.0}
+      - {name: L_ankle_roll,  id: 6,  role: leg, parent: L_shank, axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0}
+      - {name: L_toe,         id: 7,  role: leg, parent: L_foot,  axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, passive: true}
+      # ---- 右腿 (7) ----
+      - {name: R_hip_yaw,     id: 8,  role: leg, parent: torso,  axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0}
+      - {name: R_hip_roll,    id: 9,  role: leg, parent: torso,  axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0}
+      - {name: R_hip_pitch,   id: 10, role: leg, parent: torso,  axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.0,  zero_offset: 0.0}
+      - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh, axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.60, zero_offset: 0.0}
+      - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: 0.0,  zero_offset: 0.0}
+      - {name: R_ankle_roll,  id: 13, role: leg, parent: R_shank, axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0}
+      - {name: R_toe,         id: 14, role: leg, parent: R_foot,  axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, passive: true}
+    safe_pose: [0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]   # TBD: 标定后回填
+
+  # ========== miniduck-S：桌面版，腿 6 + 表情 8 = 14 ==========
+  miniduck-S:
+    servo: sts3032
+    geometry:
+      height_cm: [12, 18]           # 目标身高
+      mass_g: [200, 400]            # 整机质量目标
+    policy:
+      # 策略只控制这 6 个腿关节（顺序 = 动作向量顺序）
+      leg_joints: [L_hip_pitch, L_knee_pitch, L_ankle_pitch,
+                   R_hip_pitch, R_knee_pitch, R_ankle_pitch]
+      obs_dim: 37                  # 3+3+3+N+N+N+2+2+1+3+2, N=6
+      act_dim: 6
+      # 表情关节不进策略，由 mind/expression 以 ~20 Hz 驱动
+    joints:
+      # ---- 腿 (6)：仅矢状面，横向稳定靠结构（脚掌/髋距/配重）----
+      - {name: L_hip_pitch,   id: 1,  role: leg,   parent: torso,   axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0}
+      - {name: L_knee_pitch,  id: 2,  role: leg,   parent: L_thigh, axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.55, zero_offset: 0.0}
+      - {name: L_ankle_pitch, id: 3,  role: leg,   parent: L_shank, axis: [0, 1, 0], lo: -0.90, hi: 0.90, default: 0.0,  zero_offset: 0.0}
+      - {name: R_hip_pitch,   id: 4,  role: leg,   parent: torso,   axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0}
+      - {name: R_knee_pitch,  id: 5,  role: leg,   parent: R_thigh, axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.55, zero_offset: 0.0}
+      - {name: R_ankle_pitch, id: 6,  role: leg,   parent: R_shank, axis: [0, 1, 0], lo: -0.90, hi: 0.90, default: 0.0,  zero_offset: 0.0}
+      # ---- 颈/头 (4)：朝向交互 + 表情 ----
+      - {name: neck_pitch,    id: 7,  role: head,  parent: torso,   axis: [0, 1, 0], lo: -0.50, hi: 0.70, default: 0.0,  zero_offset: 0.0, expressive: true}
+      - {name: neck_yaw,      id: 8,  role: head,  parent: torso,   axis: [0, 0, 1], lo: -0.90, hi: 0.90, default: 0.0,  zero_offset: 0.0, expressive: true}
+      - {name: head_tilt,     id: 9,  role: head,  parent: neck,    axis: [0, 1, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, expressive: true}
+      - {name: head_roll,     id: 10, role: head,  parent: neck,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, expressive: true}
+      # ---- 喙 (1) ----
+      - {name: beak,          id: 11, role: beak,  parent: head,    axis: [0, 1, 0], lo: 0.00,  hi: 0.60, default: 0.0,  zero_offset: 0.0, expressive: true}
+      # ---- 尾/翅 (3)：动态平衡辅助 + 表现力 ----
+      - {name: tail_pitch,    id: 12, role: tail,  parent: torso,   axis: [0, 1, 0], lo: -0.60, hi: 0.60, default: 0.0,  zero_offset: 0.0, expressive: true}
+      - {name: L_wing,        id: 13, role: wing,  parent: torso,   axis: [1, 0, 0], lo: 0.00,  hi: 1.40, default: 0.0,  zero_offset: 0.0, expressive: true}
+      - {name: R_wing,        id: 14, role: wing,  parent: torso,   axis: [1, 0, 0], lo: -1.40, hi: 0.00, default: 0.0,  zero_offset: 0.0, expressive: true}
+    safe_pose: [0.0, 0.55, 0.0, 0.0, 0.55, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0]   # TBD: 标定后回填（表情关节保持中立）
+
+# ---------------- 生成与校验规则 ----------------
+generate:
+  urdf: {from: robots, target: body/urdf/{robot}.urdf}
+  mjcf: {from: robots, target: body/mjcf/{robot}.xml}
+  spec_joints: {target: mind/spec/joints.yac}   # 生成 yac 侧的关节映射表
+  runtime_consts: {target: mind/robotd/consts.generated.yac}  # joint_ids / default_pos / leg_lo / leg_hi / safe_pose
+
+validate:                          # 生成器必须强校验，任何一条不过则拒绝生成
+  - joint_count: {miniduck-L: 14, miniduck-S: 14}
+  - id_unique: true
+  - id_in_range: [1, 14]
+  - policy_leg_joints_subset_of_joints: true   # 策略引用的关节必须真实存在
+  - act_dim_matches_leg_joints: true           # act_dim == len(leg_joints)，S: 6
+  - obs_dim_formula: "3+3+3+N+N+N+2+2+1+3+2"
+  - limits_ordered: "lo < hi"
+  - default_within_limits: true
+  - sign_check_pending: true        # M4 悬挂测试后，逐关节正方向必须人工确认

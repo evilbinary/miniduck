@@ -142,6 +142,11 @@ autodiff、无 FFI 仿真接口）。因此：
 
 > obs 定义、reward 公式、动作映射、域随机化参数以 yac 规范（`mind/spec/`）为单一来源；
 > Python 训练环境从规范翻译/加载，保证与真机 `build_obs` 逐位一致。
+>
+> **规范文件的受限子集约定**：`mind/spec/*.yac` 只允许 `let` 绑定 + 标量/列表字面量 +
+> 纯函数定义，禁止 IO 与副作用，且必须以尾表达式 `()` 结束（yac 的顶层是
+> `bind* + tail`，纯 `let` 序列不合法）。这样 yac 侧可**直接执行**该文件构建观测，
+> Python 侧可用受限解析器**安全读取**同一份定义（不执行代码），一处定义两端消费。
 
 ### 4.1 观测向量（原始值，61 维示例）
 
@@ -486,7 +491,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 | 阶段 | 内容 | 产出 |
 |------|------|------|
 | M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`，可仿真模型 |
-| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/`，`train/` 单机可跑 |
+| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/`，`train/` 单机可跑；纯函数核心冒烟测试 `mind/tests/` 通过（ANF/CPS 一致） |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
 | M4 | 真机硬件装配 + robotd 50 Hz 循环（yac） | 悬挂测试通过 |

@@ -1,0 +1,51 @@
+-- =====================================================================
+-- mind/spec/reward.yac — 奖励项与终止条件「单一来源」
+-- 约束同 obs.yac：仅 let 绑定 + 字面量，无副作用。
+--
+-- 重要约定：本文件是权重与参数的唯一出处；公式以字符串形式记录语义，
+-- Python 训练侧按 name 实现对应公式。为避免两端实现漂移，
+-- M3.5 门禁除策略输出比对外，还必须做一次 reward 数值比对
+-- （相同状态输入 → yac 侧与 Python 侧 reward 差值 < 1e-6）。
+-- =====================================================================
+
+-- [名称, 公式（语义记录）, 权重, 适用版本]
+let reward_terms = [
+  ["track_lin_vel_xy", "exp(-‖v_xy - v_cmd‖² / 0.25)",      1.5,    ["L", "S"]],
+  ["track_ang_vel_z",  "exp(-(ωz - ωz_cmd)² / 0.25)",       0.5,    ["L", "S"]],
+  ["base_height",      "exp(-(h - h_ref)² / 0.04)",         2.0,    ["L", "S"]],
+  ["orientation",      "exp(-‖quat_xy‖² / 0.01)",           1.0,    ["L", "S"]],
+  ["action_smoothness","-‖a_t - a_prev‖²",                  0.01,   ["L", "S"]],
+  ["joint_torque",     "-‖τ‖²",                             0.0005, ["L", "S"]],
+  ["alive",            "1.0",                               1.0,    ["L", "S"]],
+  ["self_collision",   "两腿相撞则 -1.0",                    1.0,    ["L", "S"]],
+  ["lateral_stability","-‖v_y‖²（S 版腿无侧摆，需强约束）",   0.5,    ["S"]]
+] in
+
+-- 参考量与阈值
+let reward_refs = [
+  ["h_ref_m",           0.09],     -- 目标躯干高度；S 版按 12–18 cm 身高定，TBD 标定
+  ["v_cmd_range",       [-0.4, 0.4]],   -- 命令采样范围 m/s
+  ["yaw_cmd_range",     [-1.0, 1.0]],   -- rad/s
+  ["sigma_track",       0.25],     -- 跟踪项 exp 分母
+  ["sigma_height",      0.04],
+  ["sigma_orientation", 0.01]
+] in
+
+-- 终止条件（与 action.yac 的 safety 呼应；训练侧提前终止 = 真机安全层触发）
+let termination = [
+  ["base_height_min_m",  0.05,   "躯干过低 → 判定摔倒"],
+  ["pitch_max_deg",      60.0,   "与 safety.fall_deg 一致"],
+  ["roll_max_deg",       60.0,   "与 safety.fall_deg 一致"],
+  ["self_collision",     true,   "两腿相撞"],
+  ["timeout_s",          10.0,   "单回合上限，超时按存活截断"]
+] in
+
+-- 奖励缩放与课程
+let reward_scaling = [
+  ["dt_scale",           true,   "按控制周期归一，dt = 0.02 s"],
+  ["command_curriculum", ["stand", "slow_walk", "walk"],  "先站立后行走，逐级放开命令范围"],
+  ["termination_penalty", -5.0,  "提前终止惩罚"]
+] in
+
+-- 顶层尾表达式：保持纯表达式语义，无副作用
+()

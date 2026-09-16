@@ -1,0 +1,47 @@
+-- =====================================================================
+-- mind/spec/action.yac — 动作空间与部署映射「单一来源」
+-- 约束同 obs.yac：仅 let 绑定 + 字面量，无副作用。
+--
+-- 注意：default_pos 不在本文件重复定义，唯一出处是 body/robot.yaml
+--       （生成器会导出 mind/robotd/consts.generated.yac）。
+-- =====================================================================
+
+let control_hz = 50 in
+let cycle_ms  = 20 in
+
+-- 策略原始输出范围（由网络输出层 tanh 保证，见 DESIGN 5.3）
+let action_range = [-1.0, 1.0] in
+
+-- 部署映射：target_pos = default_pos + action_scale * action
+let action_scale_rad = 0.35 in     -- 典型 0.25 ~ 0.5
+
+-- 动作向量的关节顺序来源（不在此重复列出）
+let action_order_from = "body/robot.yaml:robots.<ver>.policy.leg_joints" in
+
+-- 安全层阈值（真机执行；训练侧终止条件与之呼应，见 reward.yac）
+let safety = [
+  ["joint_limit",        "clamp_to_rom",       "超限截断并告警"],
+  ["joint_temp_hold_c",  70.0,                 "> 70°C 该关节保持当前位置"],
+  ["stuck_frames",       5,                    "负载连续超阈 5 帧判卡死 → safe_pose"],
+  ["fall_deg",           60.0,                 "roll/pitch 超 60° 判跌倒 → 切断运动"],
+  ["bus_timeout",        "safe_pose",          "总线超时下一帧必须回 safe_pose"],
+  ["inference_error",    "safe_pose",          "推理失败下一帧必须回 safe_pose"]
+] in
+
+-- 表情关节（S 版）：不进策略，独立任务驱动
+let expressive = [
+  ["rate_hz",            20],
+  ["ramp_rad_per_s",     3.0],     -- 限速，避免表情动作扰动步态
+  ["merge_policy",       "host_by_id",  -- 与策略目标在宿主层按 ID 合流
+                         "策略覆盖腿关节 ID，表情任务只写其余 ID"]
+] in
+
+-- 控制层数值约定
+let control = [
+  ["position_mode",      "servo_internal_pid"],  -- 舵机内置位置环
+  ["current_limit",      "safety_layer"],        -- 电流/速度限制由安全层约束
+  ["watchdog_ms",        100]                    -- 宿主看门狗：超时回 safe_pose
+] in
+
+-- 顶层尾表达式：保持纯表达式语义，无副作用
+()

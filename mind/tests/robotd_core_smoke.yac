@@ -1,0 +1,88 @@
+-- =====================================================================
+-- mind/tests/robotd_core_smoke.yac — DESIGN 6.1 纯函数核心的可执行性冒烟测试
+--
+-- 目的：验证文档中 robotd 控制循环的「纯函数核心」在真实 yac 上可运行，
+--       为 M4 真机落地扫清语言层面障碍。边界原语（io_*/st_*）由宿主提供，
+--       此处不出现，只测可用 yac 核心原语表达的纯逻辑部分。
+--
+-- 运行：yac mind/tests/robotd_core_smoke.yac
+--       yac --both mind/tests/robotd_core_smoke.yac   （ANF/CPS 一致性）
+-- =====================================================================
+
+-- ---------------- 被验证的实现（与 DESIGN 6.1 一致） ----------------
+let clamp(x, lo, hi) = if x < lo then lo else if x > hi then hi else x in
+let max2(a, b) = if a > b then a else b in
+
+let map2(f, xs, ys) =
+  if len(xs) == 0 then []
+  else cons(f(nth(xs, 0), nth(ys, 0)),
+            map2(f, tail(xs), tail(ys))) in
+
+let map3(f, xs, ys, zs) =
+  if len(xs) == 0 then []
+  else cons(f(nth(xs, 0), nth(ys, 0), nth(zs, 0)),
+            map3(f, tail(xs), tail(ys), tail(zs))) in
+
+let action_scale = 0.35 in
+let leg_lo = -2.6 in
+let leg_hi = 2.6 in
+let fall_deg = 60.0 in
+let hot_cel = 70.0 in
+let load_max = 0.9 in
+let stuck_frames = 5 in
+
+let over_deg(x)   = x > fall_deg or x < -fall_deg in
+let is_fallen(e)  = over_deg(nth(e, 0)) or over_deg(nth(e, 1)) in
+let over_load(js) = foldl(max2, 0.0, js) > load_max in
+let stuck_step(n, js) = if over_load(js) then n + 1 else 0 in
+let is_stuck(n) = n >= stuck_frames in
+
+let safe_joint(target, cur, temp) =
+  let held = if temp > hot_cel then cur else target in
+  clamp(held, leg_lo, leg_hi) in
+
+let from_action(a, d) = d + action_scale * a in
+
+let build_obs(ang_vel, grav, cmd, jpos, jvel, last_action,
+              contact, phase, base_h, euler, lin_vel) =
+  append(append(append(append(ang_vel, grav), cmd),
+                append(append(append(jpos, jvel), last_action), contact)),
+         append(append(append(phase, cons(base_h, [])), euler), lin_vel)) in
+
+-- 测试辅助：重复列表（模拟 14 维腿向量）
+let rep(v, n) = if n == 0 then [] else cons(v, rep(v, n - 1)) in
+
+-- ---------------- 断言 ----------------
+let check(label, cond) =
+  print(if cond then "PASS " else "FAIL ") in
+
+let _ = check("from_action(1.0, 0.5) = 0.85", from_action(1.0, 0.5) > 0.849 and from_action(1.0, 0.5) < 0.851) in
+let _ = check("map2 -> [0.5, 0.85]", nth(map2(from_action, [0.0, 1.0], [0.5, 0.5]), 0) > 0.499
+                                    and nth(map2(from_action, [0.0, 1.0], [0.5, 0.5]), 1) > 0.849) in
+let _ = check("safe_joint hot (80C) -> hold cur", safe_joint(0.85, 0.0, 80.0) > -0.001
+                                                  and safe_joint(0.85, 0.0, 80.0) < 0.001) in
+let _ = check("safe_joint clamp upper", safe_joint(9.0, 0.0, 20.0) > 2.599
+                                        and safe_joint(9.0, 0.0, 20.0) < 2.601) in
+let _ = check("is_fallen(70,0) = true", is_fallen([70.0, 0.0, 0.0])) in
+let _ = check("is_fallen(30,20) = false", not is_fallen([30.0, 20.0, 0.0])) in
+let _ = check("stuck_step 4->5 达阈值", is_stuck(stuck_step(4, [1.0, 0.0])) ) in
+let _ = check("stuck_step 清零", stuck_step(3, [0.1, 0.2]) == 0) in
+let _ = check("obs 维度 = 61", len(build_obs(
+      [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
+      rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
+      rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2))) == 61) in
+let _ = check("obs 段顺序 index9 = joint_pos 起点",
+      nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
+          cons(42.0, rep(0.0, 13)), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
+          rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2)), 9) > 41.999) in
+let _ = check("obs 段顺序 index8 = command 末位",
+      nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
+          rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
+          rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2)), 8) > 8.999) in
+let _ = check("obs 段顺序 index60 = lin_vel 末位",
+      nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
+          rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
+          rep(0.0, 2), 0.0, rep(0.0, 3), cons(0.0, [7.7])), 60) > 7.699) in
+
+-- 顶层尾表达式
+()

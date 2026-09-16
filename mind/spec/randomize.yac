@@ -1,0 +1,55 @@
+-- =====================================================================
+-- mind/spec/randomize.yac — 域随机化「单一来源」
+-- 约束同 obs.yac：仅 let 绑定 + 字面量，无副作用。
+--
+-- 每一项都要在「训练侧开启」与「真机侧必须容忍」之间成对考虑：
+-- 训练随机化出来的偏差，真机不一定存在；但真机存在的偏差，
+-- 训练里必须有（否则策略过拟合仿真器）。
+-- =====================================================================
+
+-- [名称, 范围或值, 单位, 说明]
+let domain_randomization = [
+  -- 惯量与质量（电池、线缆、装配一致性）
+  ["mass_scale",             [0.90, 1.10],       "-",      "整机质量 ±10%"],
+  ["com_offset_m",           [0.002, 0.008],     "m",      "质心横向/纵向偏移"],
+  ["inertia_scale",          [0.90, 1.10],       "-",      "惯量缩放"],
+  -- 传感器
+  ["joint_pos_noise_rad",    0.01,               "rad",    "舵机位置噪声"],
+  ["joint_vel_noise_rad_s",  0.5,                "rad/s",  "速度估计噪声"],
+  ["imu_ang_vel_noise",      0.02,               "rad/s",  "陀螺噪声"],
+  ["imu_euler_noise_deg",    1.0,                "deg",    "姿态噪声"],
+  ["obs_delay_frames",       [0, 1],             "帧",     "观测延迟（0~20 ms）"],
+  ["lin_vel_dropout_prob",   0.2,                "-",      "base_lin_vel 段置 0 概率"],
+  -- 执行器（舵机 ≠ 理想力矩源，这一段决定 sim2real 成败）
+  ["actuator_delay_frames",  [0, 2],             "帧",     "舵机响应延迟 0~40 ms"],
+  ["kp_scale",               [0.85, 1.15],       "-",      "位置环增益抖动"],
+  ["kd_scale",               [0.85, 1.15],       "-",      "阻尼抖动"],
+  ["torque_scale",           [0.85, 1.0],        "-",      "扭矩上限（含电池电压下降）"],
+  ["bus_jitter_std_ms",      1.0,                "ms",     "总线读写的到达时间抖动"],
+  -- 环境
+  ["friction_scale",         [0.60, 1.40],       "-",      "地面摩擦"],
+  ["ground_slope_deg",       [-3.0, 3.0],        "deg",    "地面起伏"],
+  ["ground_height_noise_m",  0.005,              "m",      "地面随机高度"],
+  -- 扰动
+  ["push_interval_s",        [4.0, 8.0],         "s",      "随机外力间隔"],
+  ["push_vel_m_s",           [0.1, 0.3],         "m/s",    "等效速度脉冲强度"],
+  ["push_duration_ms",       100,                "ms",     "脉冲持续"]
+] in
+
+-- 随机化调度：先小后大，避免早期训练被随机性打散
+let randomization_curriculum = [
+  ["stage_1_stand",  "只开质量/摩擦/传感器噪声"],
+  ["stage_2_walk",   "加入执行器延迟、增益抖动、地面起伏"],
+  ["stage_3_robust", "全开 + 外力扰动 + obs 延迟与 dropout"]
+] in
+
+-- 与真机一致的硬约束（这些不是随机化，是两侧必须相同的语义）
+let consistency_required = [
+  ["action_scale_rad",    "见 action.yac",   "两端同一常数"],
+  ["default_pos",         "见 body/robot.yaml", "两端同一数值"],
+  ["joint_order",         "见 policy.leg_joints", "向量顺序不可错位"],
+  ["control_hz",          50,                "两端同一频率"]
+] in
+
+-- 顶层尾表达式：保持纯表达式语义，无副作用
+()
