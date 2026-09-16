@@ -278,9 +278,34 @@ def gen_urdf(robot_name: str, robot: dict, cfg: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def role_of_link(robot: dict, link_name: str) -> str:
+    """连杆所属部位：由连接它的关节的 role 决定（torso 无 parent_joint）。"""
+    pj = None
+    for l in robot["links"]:
+        if l["name"] == link_name:
+            pj = l.get("parent_joint")
+    if pj is None:
+        return "torso"
+    for j in robot["joints"]:
+        if j["name"] == pj:
+            return str(j.get("role", "leg"))
+    return "leg"
+
+
+#: 部位 → (geom 类型, size, rgba, 备注)。占位外形，TBD: 由 CAD 回填。
+#: 可视性目的：让出图能一眼辨认躯干/腿/头/喙/翅/尾，便于观察步态与姿态。
+ROLE_GEOM = {
+    "torso": ("box", (0.022, 0.030, 0.020), (0.30, 0.33, 0.38, 1.0)),
+    "leg":   ("capsule", (0.006, 0.012), (0.40, 0.60, 0.90, 1.0)),
+    "head":  ("sphere", (0.018,), (0.95, 0.85, 0.35, 1.0)),
+    "beak":  ("capsule", (0.004, 0.008), (0.95, 0.60, 0.20, 1.0)),
+    "wing":  ("box", (0.006, 0.020, 0.012), (0.90, 0.80, 0.30, 1.0)),
+    "tail":  ("capsule", (0.005, 0.012), (0.90, 0.55, 0.25, 1.0)),
+}
+
+
 def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
     prof = cfg["servo_profiles"][robot["servo"]]
-    kp = 8.0
     cmap = child_map(robot)
     by_link = {l["name"]: l for l in robot["links"]}
     roots = [n for n, l in by_link.items() if l.get("parent_joint") is None]
@@ -290,17 +315,29 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         f'  <!-- 自动生成：body/tools/gen.py，勿手改。来源 body/robot.yaml v{cfg["version"]} -->',
         '  <compiler angle="radian" autolimits="true"/>',
         '  <option timestep="0.002"/>',
+        # 离屏渲染缓冲：默认 640×480 太小，可视化/出图请求更大尺寸会报
+        # "Image width > framebuffer width"（见 train/scripts/view.py）
+        '  <visual>',
+        '    <!-- 头灯：默认偏暗，出图看不清；仅影响渲染 -->',
+        '    <headlight ambient="0.45 0.45 0.45" diffuse="0.9 0.9 0.9" specular="0.25 0.25 0.25"/>',
+        '    <global offwidth="1280" offheight="960"/>',
+        '  </visual>',
+        # 地面棋盘纹理：出图时能看出机器人的位移与旋转（纯视觉效果）
+        '  <asset>',
+        '    <texture name="grid" type="2d" builtin="checker" width="512" height="512"',
+        '             rgb1="0.22 0.26 0.31" rgb2="0.30 0.35 0.41"/>',
+        '    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>',
+        '  </asset>',
         '  <default>',
         '    <joint damping="0.05" armature="0.01"/>',
-        f'    <position kp="{kp}" kv="0.5"/>',
         # 占位外形：capsule 需要 size = (radius, half-length) 两个分量，
         # 只给一个会被 MuJoCo 拒绝（size 1 must be positive）。
         # TBD: 由 CAD 回填各连杆真实尺寸后替换。
-        '    <geom type="capsule" size="0.008 0.012" density="800"/>',
+        '    <geom type="capsule" size="0.006 0.012" density="800"/>',
         '  </default>',
         '  <worldbody>',
         # plane 的 size = (半长, 半宽, 网格间距)，三分量
-        '    <geom name="floor" type="plane" size="5 5 0.1" condim="3"/>  <!-- 训练地面 -->',
+        '    <geom name="floor" type="plane" size="5 5 0.1" condim="3" material="grid"/>',
     ]
 
     def emit_body(link_name: str, indent: int) -> None:
@@ -328,7 +365,14 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
                 f'range="{j["lo"]} {j["hi"]}"/>'
             )
         mass = (l.get("mass_g") or 10.0) / 1000.0
-        out.append(f'{pad}  <geom name="{link_name}_geom" mass="{mass:.5f}"/>  <!-- TBD: 由 CAD 回填 -->')
+        role = role_of_link(robot, link_name)
+        gtype, size, rgba = ROLE_GEOM.get(role, ROLE_GEOM["leg"])
+        size_s = " ".join(f"{v:g}" for v in size)
+        rgba_s = " ".join(f"{v:g}" for v in rgba)
+        out.append(
+            f'{pad}  <geom name="{link_name}_geom" type="{gtype}" size="{size_s}" '
+            f'rgba="{rgba_s}" mass="{mass:.5f}"/>  <!-- {role} 占位外形，TBD: CAD 回填 -->'
+        )
         for k in cmap.get(link_name, []):
             if k["link"]["name"] != link_name:
                 emit_body(k["link"]["name"], indent + 1)

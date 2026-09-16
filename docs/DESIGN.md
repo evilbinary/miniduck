@@ -641,7 +641,8 @@ miniduck/
 │   ├── ppo/                     # PPO 主循环、超参（L: obs61/act14；S: obs37/act6）
 │   ├── export.py                # 双产物：ONNX（验证用）+ policy_blob（部署用）
 │   ├── runs/                    # 训练产物与临时文件（不入库）
-│   └── scripts/                 # train.sh / eval.py / 回放可视化
+│   └── scripts/                 # train.sh / eval.py
+│       └── view.py              #   可视化：交互式 viewer + 离屏渲染出图/GIF
 │
 ├── verify/                      # ★ 交叉验证（M3.5 门禁）：自研 runtime vs ONNX 逐帧比对
 │   ├── policy_forward.yac       # yac 手写 MLP 前向

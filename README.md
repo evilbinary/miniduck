@@ -24,6 +24,7 @@
 | yac 解释器（可选） | 同上 | 仅在需要 ANF/CPS **双解释器互证**时使用 |
 | MuJoCo | 3.2.2 | 物理后端、`check_physics.py` |
 | **BAM**（Better Actuator Models） | `better-actuator-models[mujoco]` | 执行器拟真模型（电压控制 + 直流电机 + M1–M6 摩擦 + 掉压） |
+| Pillow | `pip install pillow` | 可视化出图（PNG/GIF） |
 
 ### 项目虚拟环境（推荐）
 
@@ -92,6 +93,7 @@ python body/tools/solve_stance.py
 # 5) Python 与 yc（编译执行）两侧 build_obs 逐位对拍
 python train/envs/tests/obs_parity.py
 
+
 # 6) 训练环境自检（MuJoCo 后端，零动作站立 200 步）
 cd train/envs && python duck_env.py --backend mujoco
 python duck_env.py --robot miniduck-L --backend mujoco    # L 版
@@ -102,6 +104,10 @@ python duck_env.py --actuator pd     # 力矩级 PD 基线（快，算法调试�
 python duck_env.py --actuator bam    # BAM：电压+直流电机+M1-M6 摩擦+掉压（训练默认）
 python duck_env.py --actuator auto   # 按 body/robot.yaml 的 actuators.default
 python ../../body/tools/check_physics.py --actuator all   # 两种模型都验静置稳定性
+
+# 8) 可视化（见下节）
+python train/scripts/view.py                                   # 交互式 viewer
+python train/scripts/view.py --mode render --seconds 2 --gif    # 离屏出图 + GIF
 ```
 
 ### 一键跑全部
@@ -130,6 +136,33 @@ PASS  [miniduck-S] obs 维度 37，yc 编译执行结果与 Python 逐位一致
 
 ---
 
+## 可视化
+
+`train/scripts/view.py` 提供两种模式（控制律走环境侧，看到的就是训练时的执行器行为）：
+
+```sh
+# 交互式：实时窗口，鼠标旋转/滚轮缩放，每秒打印高度与姿态
+python train/scripts/view.py                                   # 默认 S 版 + bam + 站立
+python train/scripts/view.py --robot miniduck-L --actuator pd
+python train/scripts/view.py --action sine                     # 髋/膝正弦摆动，看执行器跟随
+
+# 离屏出图（无需显示器）：逐帧 PNG，可再存 GIF
+python train/scripts/view.py --mode render --seconds 2 --gif
+python train/scripts/view.py --mode render --robot miniduck-L --action sine --out train/runs/view_L
+```
+
+产物落在 `train/runs/view*/`（不入库）。两个模式的取景都按机身尺寸自动计算
+（机器人只有 8–12 cm，固定相机距离会小得看不清）。
+
+模型外观由生成器按部位着色（躯干深灰 / 腿蓝 / 头黄 / 喙橙 / 翅黄 / 尾橙）并铺棋盘地面，
+便于肉眼判断姿态与位移——这些都是占位外形，**不影响物理**（质量与限位仍来自
+`robot.yaml`），待 CAD 回填后替换。
+
+> `--action sine` 只是执行器跟随演示：没有平衡控制器，机器人会大幅摆动甚至跌倒，
+> 这是预期现象（平衡要靠策略学出来）。
+
+---
+
 ## 目录结构
 
 ```
@@ -149,6 +182,7 @@ train/                训练侧（Python）
   envs/actuators.py   ★ 执行器模型层：PdTorque ↔ BAM（含上游垫片，见 DESIGN 3.4）
   envs/duck_env.py    环境：MujocoPhysics 后端 + build_obs / reward / StandEnv
   envs/tests/         obs 双侧对拍（发布门禁的提前版）
+  scripts/view.py     可视化：交互式 viewer + 离屏渲染出图/GIF
   ppo/  export.py     待实现
 verify/               发布门禁：自研 runtime vs ONNX 逐帧比对（待实现）
 docs/DESIGN.md        设计文档（唯一权威）

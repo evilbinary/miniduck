@@ -90,10 +90,10 @@ robots:
     servo: xl330_m077
     geometry:
       # 站立时躯干离地目标高度（reward 的 h_ref）
-      # 由 solve_stance.py 在 BAM(xl330,m6) 下求解为 0.126 m（占位几何下可达值；
+      # 由 solve_stance.py 在 BAM(xl330,m6) 下求解为 0.1235 m（占位外形下可达值；
       # 原声明 0.150 超出腿长范围，会让高度奖励永远达不到 1.0）
-      # → CAD 回填真实连杆与质量后需重跑求解。
-      base_height_m: 0.126
+      # ★ 几何/外形改动后必须重跑求解并回填（本次分部位外形调整后由 0.126 → 0.1235）
+      base_height_m: 0.1235
     policy:
       # 策略动作向量顺序（= obs 中 joint 段顺序），也是 50 Hz 下发的关节
       leg_joints: [L_hip_yaw, L_hip_roll, L_hip_pitch, L_knee_pitch, L_ankle_pitch, L_ankle_roll, L_toe,
@@ -154,9 +154,10 @@ robots:
     geometry:
       height_cm: [12, 18]           # 目标身高（整机，含头）
       mass_g: [200, 400]            # 整机质量目标
-      # 站立时躯干离地目标高度（reward 的 h_ref）：solve_stance.py 求解为 0.090 m
-      # （占位几何下可达值；声明 0.100 超出腿长）→ CAD 回填后需重跑求解
-      base_height_m: 0.090
+      # 站立时躯干离地目标高度（reward 的 h_ref）：solve_stance.py 求解为 0.0875 m
+      # （占位外形下可达值；原声明 0.100 超出腿长）
+      # ★ 几何/外形改动后必须重跑求解并回填
+      base_height_m: 0.0875
     policy:
       # 策略只控制这 6 个腿关节（顺序 = 动作向量顺序）
       leg_joints: [L_hip_pitch, L_knee_pitch, L_ankle_pitch,
