@@ -64,6 +64,9 @@ python body/tools/verify_gen.py
 # 3.5) 物理健全性检查（需 MuJoCo；结构校验抓不到的问题在这里暴露）
 python body/tools/check_physics.py
 
+# 3.6) 可选：重新求解静态站立姿态（改了几何/质量后需要）
+python body/tools/solve_stance.py
+
 # 4) 纯函数核心冒烟测试（yc 编译执行；--both 覆盖 ANF→CPS→ANF 往返）
 ../yac/yc.exe --both mind/tests/robotd_core_smoke.yac           # 或 "$YC_BIN"
 ../yac/yc.exe --verify-lir mind/tests/robotd_core_smoke.yac     # 可选：LIR 不变量
@@ -71,8 +74,10 @@ python body/tools/check_physics.py
 # 5) Python 与 yc（编译执行）两侧 build_obs 逐位对拍
 python train/envs/tests/obs_parity.py
 
-# 6) 训练环境自检（占位物理后端，跑 200 步 stand）
-cd train/envs && python duck_env.py
+# 6) 训练环境自检（MuJoCo 后端，零动作站立 200 步）
+cd train/envs && python duck_env.py --backend mujoco
+python duck_env.py --robot miniduck-L --backend mujoco    # L 版
+python duck_env.py --backend null                         # 占位后端（无 MuJoCo 时）
 ```
 
 ### 一键跑全部
@@ -117,7 +122,7 @@ mind/                 「心智」真机软件（yac，运行在 yiyiya OS）
   mindd/  updaterd/   高层意图、OTA（待实现）
 train/                训练侧（Python）
   envs/spec_loader.py 受限子集解析 mind/spec/*.yac（不执行代码）
-  envs/duck_env.py    环境骨架：build_obs / reward / StandEnv
+  envs/duck_env.py    环境：MujocoPhysics 后端 + build_obs / reward / StandEnv
   envs/tests/         obs 双侧对拍（发布门禁的提前版）
   ppo/  export.py     待实现
 verify/               发布门禁：自研 runtime vs ONNX 逐帧比对（待实现）
@@ -148,8 +153,11 @@ python verify/policy_forward.py --blob ...          # 与 ONNX golden 帧逐帧�
 ```
 
 当前已可用的部分：环境骨架、观测构建、奖励计算（均由 spec 驱动）。
-未完成的：MuJoCo/MJX 物理后端（替换 `envs/duck_env.py` 里的 `NullPhysics`）、
-PPO 训练循环、ONNX/blob 导出、真机 `robotd` 宿主运行时。
+已完成：环境骨架、观测构建、奖励计算（均由 spec 驱动）、**MuJoCo 后端**
+（`envs/duck_env.py` 的 `MujocoPhysics`，零动作可稳站 4 s）、静态姿态求解。
+
+未完成的：**MJX/Warp GPU 并行后端**（大规模并行时替换 MuJoCo）、PPO 训练循环、
+ONNX/blob 导出、真机 `robotd` 宿主运行时。
 
 ---
 

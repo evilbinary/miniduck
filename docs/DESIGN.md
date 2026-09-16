@@ -549,8 +549,10 @@ miniduck/
 ├── body/                        # 「身体」—— 硬件与 3D 建模（L/S 两版）
 │   ├── robot.yaml               # ★ 关节定义单一来源：DOF/限位/零位/舵机 ID/版本区分
 │   ├── tools/                   # ★ 生成器与回归校验
-│   │   ├── gen.py               #   robot.yaml → URDF/MJCF/joints.yac/consts.yac + 9 条校验
-│   │   └── verify_gen.py        #   生成产物回归测试（URDF/MJCF 结构 + yac 可执行性）
+│   │   ├── gen.py               #   robot.yaml → URDF/MJCF/joints.yac/consts.yac + 11 条校验
+│   │   ├── verify_gen.py        #   结构层回归（URDF/MJCF 数量与引用 + yc 编译执行 + LIR）
+│   │   ├── check_physics.py     #   物理层健全性（MuJoCo 加载/质量账/站立高度/落地）
+│   │   └── solve_stance.py      #   求解静态可站立标称姿态（网格搜索 + 静置打分）
 │   ├── cad/                     # 3D 模型源文件（STEP / Fusion / Onshape 导出）
 │   ├── urdf/                    # 由 robot.yaml 生成 → 训练仿真用（生成物，可重建）
 │   ├── mjcf/                    # 由 robot.yaml 生成 → MuJoCo 用（生成物，可重建）
