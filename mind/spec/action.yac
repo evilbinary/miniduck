@@ -9,6 +9,10 @@
 let control_hz = 50 in
 let cycle_ms  = 20 in
 
+-- 步态周期 T（秒）：phase 段用 cos(2πt/T), sin(2πt/T)；
+-- 真机 robotd 用旋转递推实现（见 DESIGN 6.1 的 rc/rs），两侧必须同 T。
+let gait_period_s = 1.0 in     -- TBD: 按实测步态调整
+
 -- 策略原始输出范围（由网络输出层 tanh 保证，见 DESIGN 5.3）
 let action_range = [-1.0, 1.0] in
 

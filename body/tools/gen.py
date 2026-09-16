@@ -126,10 +126,11 @@ def validate(cfg: dict) -> None:
                 elif by_name[pj]["child"] != l["name"]:
                     err(f"[{robot_name}] 连杆 {l['name']} 的 parent_joint={pj} 但该关节 child={by_name[pj]['child']}")
 
-        # 7) safe_pose 长度
-        sp = robot.get("safe_pose", [])
-        if len(sp) != len(joints):
-            err(f"[{robot_name}] safe_pose 长度 {len(sp)} != 关节数 {len(joints)}")
+        # 7) 姿态向量长度（三个姿态职责不同，见 robot.yaml 注释）
+        for pose_key, rule_key in (("safe_pose", "safe_pose_length"), ("stance_pose", "stance_pose_length")):
+            pose = robot.get(pose_key, [])
+            if rules.get(rule_key) and len(pose) != len(joints):
+                err(f"[{robot_name}] {pose_key} 长度 {len(pose)} != 关节数 {len(joints)}")
 
         # 8) 连杆树：单根、无环、连通
         tree_err = check_tree(robot_name, links, by_name)
@@ -384,6 +385,11 @@ def gen_consts_yac(cfg: dict) -> str:
         out.append(f'let joint_names_{var} = {fmt_list([j["name"] for j in joints])} in')
         out.append(f'let default_pos_{var} = {fmt_list([j["default"] for j in joints])} in')
         out.append(f'let safe_pose_{var} = {fmt_list(robot["safe_pose"])} in')
+        if robot.get("stance_pose"):
+            out.append(
+                f'let stance_pose_{var} = {fmt_list(robot["stance_pose"])} in'
+                f"   -- 静态站立姿态：仿真初始状态/悬挂测试（≠ default_pos）"
+            )
         out.append(f'let leg_lo_{var} = {min(j["lo"] for j in leg):g} in')
         out.append(f'let leg_hi_{var} = {max(j["hi"] for j in leg):g} in')
         out.append(f'let policy_joint_ids_{var} = {fmt_list([j["id"] for j in leg])} in')

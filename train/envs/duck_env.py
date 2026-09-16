@@ -18,6 +18,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from spec_loader import Spec, SpecError  # type: ignore  (同目录直接运行)
@@ -43,6 +44,8 @@ class RobotModel:
         self.act_dim: int = r["policy"]["act_dim"]
         self.default_pos = [j["default"] for j in self.joints]
         self.safe_pose = list(r["safe_pose"])
+        # 静态站立姿态：仿真初始状态用；缺省回退到 safe_pose
+        self.stance_pose = list(r.get("stance_pose") or r["safe_pose"])
         leg = [self.by_name[n] for n in self.leg_joints]
         self.leg_lo = min(j["lo"] for j in leg)
         self.leg_hi = max(j["hi"] for j in leg)
@@ -85,6 +88,182 @@ class DuckState:
     quat_xy: list[float] = field(default_factory=lambda: [0.0, 0.0])  # 姿态误差分量
     joint_torque: list[float] | None = None
     self_collision: bool = False
+
+
+# --------------------------------------------------------------------------
+# 物理后端：MuJoCo
+# --------------------------------------------------------------------------
+class MujocoPhysics:
+    """真实物理后端：加载 body/mjcf/{robot}.xml 并逐步仿真。
+
+    与真机的对应关系（这是 sim2real 的关键部分）：
+        base_ang_vel        ← 机体坐标系角速度（陀螺）
+        projected_gravity   ← 重力在机体系下的投影
+        base_lin_vel        ← 机体系线速度（真机上不可靠 → 训练侧按 spec 置 0）
+        base_height         ← torso 离地高度
+        imu_euler_deg       ← roll/pitch/yaw（度，与 safety.fall_deg 同单位）
+        contact             ← 脚/脚趾 geom 与地面的接触
+        joint_torque        ← 执行器输出力（对应舵机负载）
+    """
+
+    def __init__(self, model: RobotModel, control_dt: float, gait_period_s: float) -> None:
+        import mujoco  # 延迟导入：无 MuJoCo 时仍可用 NullPhysics 跑管线
+
+        self.mj = mujoco
+        self.rm = model
+        xml = ROOT / "body" / "mjcf" / f"{model.name}.xml"
+        if not xml.exists():
+            raise FileNotFoundError(f"MJCF 不存在：{xml}（先跑 python body/tools/gen.py）")
+        self.m = mujoco.MjModel.from_xml_path(str(xml))
+        self.d = mujoco.MjData(self.m)
+        self.dt = control_dt
+        self.gait_period_s = gait_period_s
+        self.substeps = max(1, int(round(control_dt / self.m.opt.timestep)))
+        self.t = 0
+
+        # 关节名 → qpos / qvel / actuator 下标
+        self.qpos_of: dict[str, int] = {}
+        self.qvel_of: dict[str, int] = {}
+        for j in model.joints:
+            jid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_JOINT, j["name"])
+            if jid >= 0:
+                self.qpos_of[j["name"]] = int(self.m.jnt_qposadr[jid])
+                self.qvel_of[j["name"]] = int(self.m.jnt_dofadr[jid])
+        self.act_of: dict[str, int] = {}
+        for j in model.joints:
+            aid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_ACTUATOR, f'{j["name"]}_pos')
+            if aid >= 0:
+                self.act_of[j["name"]] = int(aid)
+        self.torso_bid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        self.floor_gid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self.idx_of = {j["name"]: i for i, j in enumerate(model.joints)}
+
+    # ---------------- 生命周期 ----------------
+    def reset(self) -> None:
+        """初始状态用 stance_pose（静态站立姿态），不用 default_pos。
+
+        default_pos 是 RL 的动作参考位，实测不是静态平衡姿态（膝弯曲使质心前移，
+        0.5 s 内前倾倒地）——从它起步会让 episode 一开场就走向摔倒，
+        掩盖策略本身的表现。
+        """
+        mj, d = self.mj, self.d
+        mj.mj_resetData(self.m, d)
+        stance = self.rm.stance_pose
+        for i, j in enumerate(self.rm.joints):
+            name = j["name"]
+            if name in self.qpos_of:
+                d.qpos[self.qpos_of[name]] = stance[i]
+            if name in self.act_of:
+                d.ctrl[self.act_of[name]] = stance[i]
+        d.qvel[:] = 0.0
+        mj.mj_forward(self.m, d)
+        self.t = 0
+
+    def step(self, target_pos: list[float], dt: float | None = None) -> None:
+        """target_pos 为**全关节**目标角（未参与策略的关节保持默认位）。
+
+        dt 参数为接口统一而保留（MuJoCo 内部用 substeps × m.opt.timestep 推进）。
+        """
+        for j in self.rm.joints:
+            name = j["name"]
+            if name in self.act_of:
+                self.d.ctrl[self.act_of[name]] = target_pos[self.idx_of[name]]
+        for _ in range(self.substeps):
+            self.mj.mj_step(self.m, self.d)
+        self.t += 1
+
+    # ---------------- 状态提取 ----------------
+    def _contacts(self) -> list[float]:
+        """左右脚触地：脚/脚趾 geom 与地面有接触即 1.0。"""
+        mj, d = self.mj, self.d
+        out = [0.0, 0.0]
+        for ci in range(d.ncon):
+            c = d.contact[ci]
+            pair = (int(c.geom1), int(c.geom2))
+            if self.floor_gid not in pair:
+                continue
+            other = pair[0] if pair[1] == self.floor_gid else pair[1]
+            bname = mj.mj_id2name(self.m, mj.mjtObj.mjOBJ_BODY, int(self.m.geom_bodyid[other])) or ""
+            low = bname.lower()
+            if "foot" in low or "toe" in low or "shank" in low:
+                if low.startswith("l_"):
+                    out[0] = 1.0
+                elif low.startswith("r_"):
+                    out[1] = 1.0
+                else:
+                    out[0] = out[1] = 1.0
+        return out
+
+    def state(self) -> DuckState:
+        mj, d = self.mj, self.d
+        n = len(self.rm.joints)
+        jpos = [
+            float(d.qpos[self.qpos_of[j["name"]]]) if j["name"] in self.qpos_of else 0.0
+            for j in self.rm.joints
+        ]
+        jvel = [
+            float(d.qvel[self.qvel_of[j["name"]]]) if j["name"] in self.qvel_of else 0.0
+            for j in self.rm.joints
+        ]
+        tau = [0.0] * n
+        for j in self.rm.joints:
+            if j["name"] in self.act_of:
+                tau[self.idx_of[j["name"]]] = float(d.actuator_force[self.act_of[j["name"]]])
+
+        # 机体系量：四元数→旋转矩阵，再取机体系分量
+        quat = [float(x) for x in d.qpos[3:7]]
+        mat = np.zeros(9)
+        mj.mju_quat2Mat(mat, quat)
+        R = mat.reshape(3, 3)                 # 机体系 → 世界系
+        Rt = R.T
+        w_world = np.array(d.qvel[3:6], dtype=float)
+        v_world = np.array(d.qvel[0:3], dtype=float)
+        ang_body = Rt @ w_world
+        vel_body = Rt @ v_world
+        grav_body = Rt @ np.array([0.0, 0.0, -1.0])
+
+        # 欧拉角（度）
+        qw, qx, qy, qz = quat
+        roll = math.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy))
+        pitch = math.asin(max(-1.0, min(1.0, 2 * (qw * qy - qz * qx))))
+        yaw = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+
+        # 步态相位（与 spec 的 gait_period_s 同源）
+        ph = 2.0 * math.pi * (self.t * self.dt) / self.gait_period_s
+        height = float(d.xpos[self.torso_bid][2]) if self.torso_bid >= 0 else float(d.qpos[2])
+
+        return DuckState(
+            joint_pos=jpos,
+            joint_vel=jvel,
+            base_ang_vel=[float(x) for x in ang_body],
+            projected_gravity=[float(x) for x in grav_body],
+            base_lin_vel=[float(vel_body[0]), float(vel_body[1])],
+            base_height=height,
+            imu_euler_deg=[math.degrees(roll), math.degrees(pitch), math.degrees(yaw)],
+            command=[0.0, 0.0, 0.0],           # stand 任务：零命令
+            contact=self._contacts(),
+            phase=[math.cos(ph), math.sin(ph)],
+            quat_xy=[float(qx), float(qy)],
+            joint_torque=tau,
+            self_collision=self._self_collision(),
+        )
+
+    def _self_collision(self) -> bool:
+        """左右腿互相接触（自撞惩罚用）。"""
+        mj, d = self.mj, self.d
+        for ci in range(d.ncon):
+            c = d.contact[ci]
+            names = []
+            for g in (int(c.geom1), int(c.geom2)):
+                names.append(
+                    (mj.mj_id2name(self.m, mj.mjtObj.mjOBJ_BODY, int(self.m.geom_bodyid[g])) or "").lower()
+                )
+            if len(names) == 2:
+                l = any(n.startswith("l_") for n in names)
+                r = any(n.startswith("r_") for n in names)
+                if l and r:
+                    return True
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -133,16 +312,31 @@ class NullPhysics:
 class StandEnv:
     """stage_1_stand：命令恒为零，观测/奖励全部按 spec 实现。"""
 
-    def __init__(self, robot_name: str = "miniduck-S", spec: Spec | None = None) -> None:
+    def __init__(
+        self,
+        robot_name: str = "miniduck-S",
+        spec: Spec | None = None,
+        backend: str = "mujoco",
+    ) -> None:
         self.spec = spec or Spec()
         self.model = RobotModel.load(robot_name)
         self.action_scale = self.spec.action_scale()
         self.dt = 1.0 / self.spec.control_hz()
+        self.gait_period_s = self.spec.gait_period_s()
         self.weights = self.spec.reward_terms()
         # 参考量：解析 @robot.* 引用（h_ref 等几何量来自 body/robot.yaml）
         self.refs = self.spec.reward_refs_for(self.model.raw)
         self.segments = self.spec.obs_segments()
-        self.physics = NullPhysics(self.model)
+        self.backend_name = backend
+        if backend == "mujoco":
+            try:
+                self.physics = MujocoPhysics(self.model, self.dt, self.gait_period_s)
+            except Exception as e:  # noqa: BLE001
+                print(f"[warn] MuJoCo 后端不可用（{e}），回退 NullPhysics")
+                self.backend_name = "null"
+                self.physics = NullPhysics(self.model)
+        else:
+            self.physics = NullPhysics(self.model)
         self.last_action = [0.0] * self.model.n_leg
         self.t = 0
 
@@ -270,18 +464,35 @@ class StandEnv:
 
 
 if __name__ == "__main__":
-    env = StandEnv("miniduck-S")
-    print(f"机型 {env.model.name}: 腿关节 {env.model.n_leg}, obs {env.obs_dim}, act {env.model.act_dim}")
+    import argparse
+
+    ap = argparse.ArgumentParser(description="miniduck stand 环境自检")
+    ap.add_argument("--robot", default="miniduck-S", choices=["miniduck-L", "miniduck-S"])
+    ap.add_argument("--backend", default="mujoco", choices=["mujoco", "null"])
+    ap.add_argument("--steps", type=int, default=200)
+    args = ap.parse_args()
+
+    env = StandEnv(args.robot, backend=args.backend)
+    print(f"机型 {env.model.name}: 腿关节 {env.model.n_leg}, obs {env.obs_dim}, "
+          f"act {env.model.act_dim}, 后端 {env.backend_name}")
     print(f"参考量（引用解析后）: h_ref_m={env.refs['h_ref_m']}（来自 body/robot.yaml geometry）")
+
     obs = env.reset()
     print(f"重置观测: 长度 {len(obs)}, 前 12 项 {[round(x, 3) for x in obs[:12]]}")
-    total = 0.0
-    for _ in range(200):
+    total, heights, contacts, done = 0.0, [], None, False
+    for _ in range(args.steps):
         obs, r, done, info = env.step([0.0] * env.model.n_leg)
+        s = info["state"]
         total += r
+        heights.append(s.base_height)
+        contacts = s.contact
         if done:
-            print(f"提前终止于第 {env.t} 步")
             break
-    print(f"200 步零动作累计回报: {total:.3f}（每步 {total / max(env.t, 1):.5f}）")
+    print(f"{env.t} 步零动作累计回报 {total:.3f}（每步 {total / max(env.t, 1):.5f}）"
+          + ("，提前终止" if done else ""))
+    print(f"躯干高度: 起 {heights[0] * 1000:.1f} mm → 终 {heights[-1] * 1000:.1f} mm "
+          f"（区间 {min(heights) * 1000:.1f}–{max(heights) * 1000:.1f} mm，h_ref={env.refs['h_ref_m'] * 1000:.0f} mm）")
+    print(f"触地: {contacts}  IMU 姿态: pitch={info['state'].imu_euler_deg[1]:.1f}°, "
+          f"roll={info['state'].imu_euler_deg[0]:.1f}°")
     print("单步奖励分解:", {k: round(v, 4) for k, v in info["terms"].items()})
     print("权重（来自 spec/reward.yac）:", env.weights)

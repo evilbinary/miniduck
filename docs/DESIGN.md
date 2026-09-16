@@ -105,6 +105,19 @@ autodiff、无 FFI 仿真接口）。因此：
 | 喙 | 1 | 张合 | 交互反馈/鸣叫动作 |
 | 尾巴/翅膀/配重 | 3 | 尾 Pitch、双翅扇动（或 1 翅 + 2 配重） | 动态平衡辅助 + 表现力 |
 
+**三个姿态的职责区分**（`body/robot.yaml`，易混淆，务必分清）：
+
+| 姿态 | 用途 | 来源 |
+|------|------|------|
+| `stance_pose` | 静态站立姿态：仿真初始状态、悬挂/落地测试、站立基线 | `solve_stance.py` 求解（占位几何下 L=0.10/-0.10、S=全 0） |
+| 各关节 `default` | 动作参考位：`target = default + scale·action`，**零动作应≈站立** | 同上，与 stance_pose 对齐 |
+| `safe_pose` | 异常回位姿态：总线超时/跌倒/过热时下发 | 装配标定（TBD） |
+
+> 实测教训：膝弯曲 0.55 rad 的"参考位"使质心前移，0.4 s 内前倾倒地，每个 episode
+> 开局就摔、训练信号极差。改为求解静态平衡姿态后，零动作即可稳定站立 4 s（奖励 6.0/步）。
+> 另外 `base_height_m` 必须与腿部运动学可达高度一致（占位几何下 L=128 mm、S=90 mm），
+> 否则高度奖励永远达不到 1.0。
+
 结构要点：
 
 - 躯干中空容纳主控板、IMU、电池，重心尽量靠下、靠近髋轴；
@@ -350,7 +363,10 @@ let cycle_ms  = 20 in                    -- 50 Hz
 let action_scale = 0.35 in               -- rad，典型 0.25 ~ 0.5
 let leg_lo  = -2.6 in                    -- 腿关节软限位（rad）
 let leg_hi  =  2.6 in
--- safe_pose / default_pos：各 14 个角，装配标定后写入
+-- 三个姿态职责不同（由 body/robot.yaml 生成，见 3.1 节）：
+--   stance_pose  静态站立姿态（启动/落地/悬挂测试基线，≠ default_pos）
+--   default_pos  动作参考位：target = default_pos + scale·action
+--   safe_pose    异常回位姿态（超时/跌倒/过热时下发）
 -- （S 版：策略动作仅 6 维，映射用腿关节子集 default_pos[0..5] + leg_lo/leg_hi；
 --   表情关节另有一组 head_lo/head_hi，不参与策略映射）
 -- （S 版：总线仍挂 14 个 STS3032 全量读；策略只下发 6 个腿目标，
@@ -473,7 +489,7 @@ let loop(t, last_action, pc, ps, stuck_n) =
   -- 相位旋转递推：pc' = pc·rc − ps·rs；ps' = pc·rs + ps·rc
   loop(t + 1, act, pc * rc - ps * rs, pc * rs + ps * rc, stuck_n1)
 in
-loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载计数 0
+loop(0, stance_pose, 1.0, 0.0, 0)  -- 从静态站立姿态起步；相位初始 (cos,sin)=(1,0)，过载计数 0
 ```
 
 > **实现注记**：真实 `robotd` 中，外层 forever 循环、看门狗与总线驱动位于
@@ -507,7 +523,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 | 阶段 | 内容 | 产出 |
 |------|------|------|
 | M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
-| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）、**obs 双侧对拍**、**MuJoCo 物理健全性检查**均通过；MuJoCo 后端接入 |
+| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）、**obs 双侧对拍**、**MuJoCo 物理健全性检查**均通过；**MuJoCo 后端接入**，静态标称姿态由 `solve_stance.py` 求解（零动作零动作可稳站 4 s） |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
 | M4 | 真机硬件装配 + robotd 50 Hz 循环（yac） | 悬挂测试通过 |

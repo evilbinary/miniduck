@@ -252,6 +252,9 @@ class Spec:
     def control_hz(self) -> int:
         return int(self.get("control_hz"))
 
+    def gait_period_s(self) -> float:
+        return float(self.get("gait_period_s"))
+
 
 if __name__ == "__main__":
     sp = Spec()
