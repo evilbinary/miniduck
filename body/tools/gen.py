@@ -140,6 +140,18 @@ def validate(cfg: dict) -> None:
         if robot.get("servo") not in profiles:
             err(f"[{robot_name}] servo={robot.get('servo')} 未在 servo_profiles 中定义")
 
+        # 10) 几何自洽：站立基座高度必须小于整机身高下限
+        geo = robot.get("geometry", {})
+        if rules.get("base_height_below_body_height", True) and "height_cm" in geo:
+            bh = geo.get("base_height_m")
+            if bh is None:
+                err(f"[{robot_name}] 缺 geometry.base_height_m（reward 的 h_ref 引用它）")
+            elif bh >= min(geo["height_cm"]) / 100.0:
+                err(
+                    f"[{robot_name}] geometry.base_height_m={bh} 不小于身高下限 "
+                    f"{min(geo['height_cm']) / 100.0} m，几何不自洽"
+                )
+
         # warnings：TBD 占位
         n_tbd = 0
         for j in joints:
@@ -370,6 +382,12 @@ def gen_consts_yac(cfg: dict) -> str:
         exp = [j for j in joints if j.get("expressive")]
         if exp:
             out.append(f'let expressive_joint_ids_{var} = {fmt_list([j["id"] for j in exp])} in')
+        bh = robot.get("geometry", {}).get("base_height_m")
+        if bh is not None:
+            out.append(
+                f'let base_height_ref_{var} = {bh:g} in'
+                f"   -- 站立基座高度；spec 的 h_ref_m 通过 @robot.* 引用同一数值"
+            )
         out.append("")
     out.append("-- 顶层尾表达式")
     out.append("()")

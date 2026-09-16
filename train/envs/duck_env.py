@@ -100,6 +100,8 @@ class NullPhysics:
     def __init__(self, model: RobotModel) -> None:
         self.m = model
         self.target = list(model.default_pos)
+        # 占位后端把机器人固定在站立目标高度（来自 robot.yaml 的几何）
+        self.stand_height = float(model.raw.get("geometry", {}).get("base_height_m", 0.12))
 
     def reset(self) -> None:
         self.target = list(self.m.default_pos)
@@ -114,7 +116,7 @@ class NullPhysics:
             base_ang_vel=[0.0, 0.0, 0.0],
             projected_gravity=[0.0, 0.0, -1.0],
             base_lin_vel=[0.0, 0.0],
-            base_height=float(self.m.raw.get("geometry", {}).get("height_cm", [15, 15])[0]) / 100.0,
+            base_height=self.stand_height,
             imu_euler_deg=[0.0, 0.0, 0.0],
             command=[0.0, 0.0, 0.0],
             contact=[1.0, 1.0],
@@ -137,7 +139,8 @@ class StandEnv:
         self.action_scale = self.spec.action_scale()
         self.dt = 1.0 / self.spec.control_hz()
         self.weights = self.spec.reward_terms()
-        self.refs = self.spec.reward_refs()
+        # 参考量：解析 @robot.* 引用（h_ref 等几何量来自 body/robot.yaml）
+        self.refs = self.spec.reward_refs_for(self.model.raw)
         self.segments = self.spec.obs_segments()
         self.physics = NullPhysics(self.model)
         self.last_action = [0.0] * self.model.n_leg
@@ -160,6 +163,21 @@ class StandEnv:
             )
         if self.model.act_dim != self.model.n_leg:
             raise SpecError(f"act_dim={self.model.act_dim} 与 leg_joints={self.model.n_leg} 不一致")
+
+    def check_refs(self) -> None:
+        """跨文件引用必须全部可解析，且数值要落在物理合理区间。"""
+        refs = self.refs
+        h = refs.get("h_ref_m")
+        if not isinstance(h, (int, float)):
+            raise SpecError(f"h_ref_m 未解析为数值：{h!r}")
+        if not (0.0 < h < 0.5):
+            raise SpecError(f"h_ref_m={h} 超出合理范围 (0, 0.5) m")
+        hc = self.model.raw.get("geometry", {}).get("height_cm")
+        if hc and h > min(hc) / 100.0:
+            raise SpecError(
+                f"h_ref_m={h} 大于整机身高下限 {min(hc)} cm，几何不自洽"
+                "（检查 body/robot.yaml 的 geometry）"
+            )
 
     # ---------------- 观测 ----------------
     def build_obs(self, s: DuckState, last_action: list[float]) -> list[float]:
@@ -233,6 +251,7 @@ class StandEnv:
     # ---------------- 标准接口 ----------------
     def reset(self) -> list[float]:
         self.check_dims()
+        self.check_refs()
         self.physics.reset()
         self.last_action = [0.0] * self.model.n_leg
         self.t = 0
@@ -253,6 +272,7 @@ class StandEnv:
 if __name__ == "__main__":
     env = StandEnv("miniduck-S")
     print(f"机型 {env.model.name}: 腿关节 {env.model.n_leg}, obs {env.obs_dim}, act {env.model.act_dim}")
+    print(f"参考量（引用解析后）: h_ref_m={env.refs['h_ref_m']}（来自 body/robot.yaml geometry）")
     obs = env.reset()
     print(f"重置观测: 长度 {len(obs)}, 前 12 项 {[round(x, 3) for x in obs[:12]]}")
     total = 0.0

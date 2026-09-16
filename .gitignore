@@ -78,3 +78,4 @@ dkms.conf
 # debug information files
 *.dwo
 train/envs/__pycache__/*.pyc
+body/tools/__pycache__/*.pyc

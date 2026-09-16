@@ -147,6 +147,13 @@ autodiff、无 FFI 仿真接口）。因此：
 > 纯函数定义，禁止 IO 与副作用，且必须以尾表达式 `()` 结束（yac 的顶层是
 > `bind* + tail`，纯 `let` 序列不合法）。这样 yac 侧可**直接执行**该文件构建观测，
 > Python 侧可用受限解析器**安全读取**同一份定义（不执行代码），一处定义两端消费。
+>
+> **跨文件引用语法**：值的形态为字符串 `"@robot.<path>"` 时，表示取
+> `body/robot.yaml` 中 `robots.<当前机型>.<path>` 的字段——用于让**几何量**
+> （如 `base_height_m`）保持单一来源，spec 不重复硬编码。解析在 Python 侧
+> （`spec_loader.resolve_refs`）进行，解析不到即报错，绝不静默取默认值；
+> 生成器同时把该值派生进 `mind/robotd/consts.generated.yac`
+> （`base_height_ref_*`），供 yac 侧做 reward 对拍时取同一数值。
 
 ### 4.1 观测向量（原始值，61 维示例）
 
@@ -205,6 +212,11 @@ autodiff、无 FFI 仿真接口）。因此：
 | 自撞惩罚 | 若两腿相撞则 -1.0 | 1.0 |
 
 > 权重是一组能跑出稳定步态的起点，仍需按真机行为调。
+>
+> **几何量不在 spec 里硬编码**：表中 `h_ref`（目标躯干离地高度）的唯一出处是
+> `body/robot.yaml` 的 `geometry.base_height_m`，spec 通过引用语法取值
+> （见第 4 章「受限子集约定」）。生成器另有一条校验：`base_height_m` 必须
+> 小于整机身高下限，否则几何不自洽、拒绝生成。
 
 ### 4.4 域随机化（关键项）
 
@@ -494,7 +506,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 | 阶段 | 内容 | 产出 |
 |------|------|------|
 | M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
-| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/`，`train/` 单机可跑；纯函数核心冒烟测试 `mind/tests/` 通过（ANF/CPS 一致） |
+| M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（ANF/CPS 一致）与 **obs 双侧对拍**均通过；MuJoCo 后端接入 |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
 | M4 | 真机硬件装配 + robotd 50 Hz 循环（yac） | 悬挂测试通过 |
@@ -548,9 +560,13 @@ miniduck/
 │       └── robotd_core_smoke.yac
 │
 ├── train/                       # 训练侧（Python + GPU，只在训练 PC 上）
-│   ├── envs/                    # MuJoCo/MJX/Warp 环境，从 spec/ 翻译加载规范
+│   ├── envs/                    # 环境：从 spec/ 加载规范（MuJoCo/MJX 后端待接入）
+│   │   ├── spec_loader.py       #   受限子集解析 mind/spec/*.yac（不执行代码）
+│   │   ├── duck_env.py          #   DuckState / build_obs / reward / StandEnv
+│   │   └── tests/obs_parity.py  #   ★ Python 与 yac 两侧 build_obs 逐位对拍
 │   ├── ppo/                     # PPO 主循环、超参（L: obs61/act14；S: obs37/act6）
 │   ├── export.py                # 双产物：ONNX（验证用）+ policy_blob（部署用）
+│   ├── runs/                    # 训练产物与临时文件（不入库）
 │   └── scripts/                 # train.sh / eval.py / 回放可视化
 │
 ├── verify/                      # ★ 交叉验证（M3.5 门禁）：自研 runtime vs ONNX 逐帧比对

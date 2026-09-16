@@ -12,7 +12,7 @@
 let reward_terms = [
   ["track_lin_vel_xy", "exp(-‖v_xy - v_cmd‖² / 0.25)",      1.5,    ["L", "S"]],
   ["track_ang_vel_z",  "exp(-(ωz - ωz_cmd)² / 0.25)",       0.5,    ["L", "S"]],
-  ["base_height",      "exp(-(h - h_ref)² / 0.04)",         2.0,    ["L", "S"]],
+  ["base_height",      "exp(-(h - h_ref)² / 0.04)；h_ref 见 reward_refs（引用 robot.yaml）", 2.0, ["L", "S"]],
   ["orientation",      "exp(-‖quat_xy‖² / 0.01)",           1.0,    ["L", "S"]],
   ["action_smoothness","-‖a_t - a_prev‖²",                  0.01,   ["L", "S"]],
   ["joint_torque",     "-‖τ‖²",                             0.0005, ["L", "S"]],
@@ -22,8 +22,10 @@ let reward_terms = [
 ] in
 
 -- 参考量与阈值
+-- 引用语法："@robot.<path>" 表示取 body/robot.yaml 中 robots.<当前机型> 下的字段，
+--          由 Python 侧解析（spec_loader.resolve_refs）与校验；不在本文件重复硬编码。
 let reward_refs = [
-  ["h_ref_m",           0.09],     -- 目标躯干高度；S 版按 12–18 cm 身高定，TBD 标定
+  ["h_ref_m",           "@robot.geometry.base_height_m"],  -- 目标躯干高度，几何量归 robot.yaml
   ["v_cmd_range",       [-0.4, 0.4]],   -- 命令采样范围 m/s
   ["yaw_cmd_range",     [-1.0, 1.0]],   -- rad/s
   ["sigma_track",       0.25],     -- 跟踪项 exp 分母

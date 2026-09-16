@@ -59,6 +59,8 @@ robots:
   # ========== miniduck-L：大型版，14 DOF 全给腿 ==========
   miniduck-L:
     servo: xl330_m077
+    geometry:
+      base_height_m: 0.150         # TBD: 站立时躯干离地目标高度（reward 的 h_ref，由 CAD 回填）
     policy:
       # 策略动作向量顺序（= obs 中 joint 段顺序），也是 50 Hz 下发的关节
       leg_joints: [L_hip_yaw, L_hip_roll, L_hip_pitch, L_knee_pitch, L_ankle_pitch, L_ankle_roll, L_toe,
@@ -106,8 +108,9 @@ robots:
   miniduck-S:
     servo: sts3032
     geometry:
-      height_cm: [12, 18]           # 目标身高
+      height_cm: [12, 18]           # 目标身高（整机，含头）
       mass_g: [200, 400]            # 整机质量目标
+      base_height_m: 0.100          # TBD: 站立时躯干离地目标高度（reward 的 h_ref）
     policy:
       # 策略只控制这 6 个腿关节（顺序 = 动作向量顺序）
       leg_joints: [L_hip_pitch, L_knee_pitch, L_ankle_pitch,
@@ -173,6 +176,7 @@ validate:
   default_within_limits: true
   link_refs_valid: true              # parent/child 必须存在；parent != child；树无环且连通
   safe_pose_length: "== joint count"
+  base_height_below_body_height: true  # geometry.base_height_m 必须小于 height_cm 下限
   warnings:
     - "xyz 为 TBD 占位：需 CAD 回填后重新生成"
     - "mass_g 为 TBD 占位：影响仿真惯量，M1 必须回填"

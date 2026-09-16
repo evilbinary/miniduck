@@ -27,6 +27,30 @@ class SpecError(Exception):
     """spec 文件不满足受限子集约定。"""
 
 
+#: 跨文件引用前缀：`"@robot.geometry.base_height_m"` 表示取
+#: body/robot.yaml 中 robots.<当前机型> 下的字段。几何量归 robot.yaml，
+#: spec 只引用不重复硬编码（见 DESIGN 4.3）。
+ROBOT_REF = "@robot."
+
+
+def resolve_refs(value: Any, robot_cfg: dict, where: str = "") -> Any:
+    """递归解析 spec 值中的跨文件引用；解析不到即报错（不静默取默认值）。"""
+    if isinstance(value, str) and value.startswith(ROBOT_REF):
+        path = value[len(ROBOT_REF):].split(".")
+        cur: Any = robot_cfg
+        for k in path:
+            if not isinstance(cur, dict) or k not in cur:
+                raise SpecError(
+                    f"{where}: 引用 {value!r} 无法解析"
+                    f"（在 robots.<机型>.{k} 处断裂，请检查 body/robot.yaml）"
+                )
+            cur = cur[k]
+        return cur
+    if isinstance(value, list):
+        return [resolve_refs(v, robot_cfg, where) for v in value]
+    return value
+
+
 class SpecParser:
     def __init__(self, src: str, filename: str) -> None:
         self.s = src
@@ -197,7 +221,24 @@ class Spec:
         return {row[0]: row[2] for row in self.get("reward_terms")}
 
     def reward_refs(self) -> dict[str, Any]:
+        """原始值（可能含 @robot.* 引用）。"""
         return {row[0]: row[1] for row in self.get("reward_refs")}
+
+    def reward_refs_for(self, robot_cfg: dict) -> dict[str, Any]:
+        """解析跨文件引用后的参考量。robot_cfg = robot.yaml 的 robots.<机型>。"""
+        raw = self.reward_refs()
+        return {
+            k: resolve_refs(v, robot_cfg, where=f"reward_refs.{k}")
+            for k, v in raw.items()
+        }
+
+    def refs_pending(self) -> dict[str, str]:
+        """返回仍含 @robot.* 引用的键 → 便于校验是否全部可解析。"""
+        return {
+            k: v
+            for k, v in self.reward_refs().items()
+            if isinstance(v, str) and v.startswith(ROBOT_REF)
+        }
 
     def randomization(self) -> dict[str, Any]:
         return {row[0]: row[1] for row in self.get("domain_randomization")}
