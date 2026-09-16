@@ -28,6 +28,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
 
+sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层
+from actuators import hold_pose_steps  # noqa: E402
+
 
 def leg_joints(robot: dict) -> tuple[list[str], list[str], list[str], dict[str, int]]:
     """识别腿部的 hip/knee/ankle 关节名与下标。"""
@@ -51,20 +54,22 @@ def joint_addrs(m, mujoco, joint_names: list[str]):
     return qadr, act
 
 
-def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id) -> tuple[float, float, float]:
+def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot) -> tuple[float, float, float]:
     """把关节设到 pose 静置 seconds 秒，返回 (最终倾斜°, 躯干高度 mm, 动能 J)。"""
     mujoco.mj_resetData(m, d)
     for i, adr in enumerate(qadr):
         if adr is not None:
             d.qpos[adr] = pose[i]
-    for i, aid in enumerate(act):
-        if aid is not None:
-            d.ctrl[aid] = pose[i]
+    d.ctrl[:] = 0.0
     d.qvel[:] = 0.0
     mujoco.mj_forward(m, d)
 
-    for _ in range(int(seconds / m.opt.timestep)):
-        mujoco.mj_step(m, d)
+    # 力矩执行器：必须用 PD 力矩保持姿态（不能直接写 ctrl=角度）
+    prof = robot["_servo_profile"]
+    hold_pose_steps(
+        m, d, pose, [j["name"] for j in robot["joints"]], prof, mujoco,
+        int(seconds / m.opt.timestep),
+    )
 
     quat_w = float(d.qpos[3])
     tilt = float(np.degrees(2 * np.arccos(np.clip(abs(quat_w), -1.0, 1.0))))
@@ -76,7 +81,8 @@ def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id) -> tuple[float, f
 def solve(robot_name: str, cfg: dict, seconds: float, step: float) -> dict | None:
     import mujoco
 
-    robot = cfg["robots"][robot_name]
+    robot = dict(cfg["robots"][robot_name])
+    robot["_servo_profile"] = cfg["servo_profiles"][robot["servo"]]
     m = mujoco.MjModel.from_xml_path(
         str(ROOT / cfg["generate"]["mjcf"]["target"].format(robot=robot_name))
     )
@@ -101,7 +107,7 @@ def solve(robot_name: str, cfg: dict, seconds: float, step: float) -> dict | Non
             for i in range(len(joints))
         ):
             continue
-        tilt, height, ke = simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id)
+        tilt, height, ke = simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot)
         score = tilt + 1000.0 * abs(height / 1000.0 - h_ref) + 10.0 * ke
         results.append(
             {

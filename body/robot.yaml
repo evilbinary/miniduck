@@ -41,6 +41,15 @@ servo_profiles:
     ticks_per_rev: 4096
     temp_warn_c: 70
     load_max: 0.9
+    # 执行器建模（见 DESIGN 3.4）：gains 为力矩级 PD 基线；bam 为拟真模型
+    gains: {kp: 15.0, kv: 0.5}        # TBD: 由固件 PID 反推/台架标定
+    bam:
+      motor_name: xl330               # BAM 内置辨识对象是 XL330-M288-T
+      model: m6                       # Stribeck + 负载相关 + 方向相关 + 二次项
+      vin: 7.4                        # 供电电压（V）
+      vin_drop_resistance: 0.12       # TBD: 电池+线缆等效内阻（Ω）
+      vin_min: 6.0                    # 掉压硬下界
+      note: "M077 与 M288-T 齿比不同 → 需台架重新辨识，或整机改用 M288"
   sts3032:
     model: STS3032
     protocol: feetech_scs
@@ -52,6 +61,14 @@ servo_profiles:
     temp_warn_c: 70
     load_max: 0.9
     size_mm: [23.2, 12.1, 28.5]
+    gains: {kp: 12.0, kv: 0.4}        # TBD: 由固件 PID 反推/台架标定
+    bam:
+      motor_name: feetech_sts3215_7_4V   # 近似：STS3032 与其同族
+      model: m1                          # ★ BAM 仅内置 M1；M2–M6 需台架辨识（见 DESIGN 3.4）
+      vin: 6.0
+      vin_drop_resistance: 0.10          # TBD
+      vin_min: 5.0
+      note: "STS3032 无内置参数：暂用 STS3215@7.4V 的 M1 近似，需自行辨识后替换"
 
 # ---------------- 机型 ----------------
 robots:

@@ -106,8 +106,16 @@ class MujocoPhysics:
         joint_torque        ← 执行器输出力（对应舵机负载）
     """
 
-    def __init__(self, model: RobotModel, control_dt: float, gait_period_s: float) -> None:
+    def __init__(
+        self,
+        model: RobotModel,
+        control_dt: float,
+        gait_period_s: float,
+        actuator_model: str = "pd",
+    ) -> None:
         import mujoco  # 延迟导入：无 MuJoCo 时仍可用 NullPhysics 跑管线
+
+        from actuators import PdTorque, build_bam_controller  # 同目录
 
         self.mj = mujoco
         self.rm = model
@@ -121,6 +129,15 @@ class MujocoPhysics:
         self.substeps = max(1, int(round(control_dt / self.m.opt.timestep)))
         self.t = 0
 
+        # 执行器模型：pd（力矩级 PD 基线）| bam（电压控制 + 直流电机 + M1-M6 摩擦 + 掉压）
+        self.actuator_model = actuator_model
+        self.pd = PdTorque.from_servo_profile(model.servo)
+        self.bam = None
+        if actuator_model == "bam":
+            joint_names = [j["name"] for j in model.joints if not j.get("passive")]
+            self.bam = build_bam_controller(model.servo, self.m, self.d, joint_names)
+            self.bam_joints = joint_names
+
         # 关节名 → qpos / qvel / actuator 下标
         self.qpos_of: dict[str, int] = {}
         self.qvel_of: dict[str, int] = {}
@@ -129,9 +146,10 @@ class MujocoPhysics:
             if jid >= 0:
                 self.qpos_of[j["name"]] = int(self.m.jnt_qposadr[jid])
                 self.qvel_of[j["name"]] = int(self.m.jnt_dofadr[jid])
+        # 执行器名 = 关节名（BAM 要求；gen.py 生成 <motor name="{joint}">）
         self.act_of: dict[str, int] = {}
         for j in model.joints:
-            aid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_ACTUATOR, f'{j["name"]}_pos')
+            aid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_ACTUATOR, j["name"])
             if aid >= 0:
                 self.act_of[j["name"]] = int(aid)
         self.torso_bid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "torso")
@@ -153,8 +171,7 @@ class MujocoPhysics:
             name = j["name"]
             if name in self.qpos_of:
                 d.qpos[self.qpos_of[name]] = stance[i]
-            if name in self.act_of:
-                d.ctrl[self.act_of[name]] = stance[i]
+        d.ctrl[:] = 0.0            # 力矩执行器：初始力矩置 0
         d.qvel[:] = 0.0
         mj.mj_forward(self.m, d)
         self.t = 0
@@ -163,13 +180,30 @@ class MujocoPhysics:
         """target_pos 为**全关节**目标角（未参与策略的关节保持默认位）。
 
         dt 参数为接口统一而保留（MuJoCo 内部用 substeps × m.opt.timestep 推进）。
+
+        执行器模型：
+            pd  → 逐子步计算力矩级 PD（有增益上限/饱和/跟随误差）
+            bam → 交给 BAM 的 MujocoController（电压控制 + 直流电机 + 摩擦 + 掉压），
+                  它自行写 d.ctrl，并按上一子步负载更新 dof_frictionloss/damping
         """
-        for j in self.rm.joints:
-            name = j["name"]
-            if name in self.act_of:
-                self.d.ctrl[self.act_of[name]] = target_pos[self.idx_of[name]]
-        for _ in range(self.substeps):
-            self.mj.mj_step(self.m, self.d)
+        d = self.d
+        if self.bam is not None:
+            for name in self.bam_joints:
+                self.bam.set_q_target(name, target_pos[self.idx_of[name]])
+            for _ in range(self.substeps):
+                self.bam.update()
+                self.mj.mj_step(self.m, d)
+        else:
+            for _ in range(self.substeps):
+                for i, j in enumerate(self.rm.joints):
+                    name = j["name"]
+                    if name in self.act_of:
+                        d.ctrl[self.act_of[name]] = self.pd.torque(
+                            target_pos[i],
+                            float(d.qpos[self.qpos_of[name]]),
+                            float(d.qvel[self.qvel_of[name]]),
+                        )
+                self.mj.mj_step(self.m, d)
         self.t += 1
 
     # ---------------- 状态提取 ----------------
@@ -317,6 +351,7 @@ class StandEnv:
         robot_name: str = "miniduck-S",
         spec: Spec | None = None,
         backend: str = "mujoco",
+        actuator_model: str = "pd",
     ) -> None:
         self.spec = spec or Spec()
         self.model = RobotModel.load(robot_name)
@@ -328,14 +363,19 @@ class StandEnv:
         self.refs = self.spec.reward_refs_for(self.model.raw)
         self.segments = self.spec.obs_segments()
         self.backend_name = backend
+        self.actuator_name = actuator_model
         if backend == "mujoco":
             try:
-                self.physics = MujocoPhysics(self.model, self.dt, self.gait_period_s)
+                self.physics = MujocoPhysics(
+                    self.model, self.dt, self.gait_period_s, actuator_model=actuator_model
+                )
             except Exception as e:  # noqa: BLE001
                 print(f"[warn] MuJoCo 后端不可用（{e}），回退 NullPhysics")
                 self.backend_name = "null"
+                self.actuator_name = "n/a"
                 self.physics = NullPhysics(self.model)
         else:
+            self.actuator_name = "n/a"
             self.physics = NullPhysics(self.model)
         self.last_action = [0.0] * self.model.n_leg
         self.t = 0
@@ -469,12 +509,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="miniduck stand 环境自检")
     ap.add_argument("--robot", default="miniduck-S", choices=["miniduck-L", "miniduck-S"])
     ap.add_argument("--backend", default="mujoco", choices=["mujoco", "null"])
+    ap.add_argument("--actuator", default="pd", choices=["pd", "bam"],
+                    help="执行器模型：pd=力矩级PD基线，bam=电压+直流电机+M1-M6摩擦+掉压")
     ap.add_argument("--steps", type=int, default=200)
     args = ap.parse_args()
 
-    env = StandEnv(args.robot, backend=args.backend)
+    env = StandEnv(args.robot, backend=args.backend, actuator_model=args.actuator)
     print(f"机型 {env.model.name}: 腿关节 {env.model.n_leg}, obs {env.obs_dim}, "
-          f"act {env.model.act_dim}, 后端 {env.backend_name}")
+          f"act {env.model.act_dim}, 后端 {env.backend_name}, 执行器 {env.actuator_name}")
+    from actuators import describe
+
+    print(f"执行器配置: {describe(env.model.servo)}")
     print(f"参考量（引用解析后）: h_ref_m={env.refs['h_ref_m']}（来自 body/robot.yaml geometry）")
 
     obs = env.reset()

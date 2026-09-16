@@ -29,6 +29,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
 
+sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层
+from actuators import hold_pose_steps  # noqa: E402
+
 OKS: list[str] = []
 FAILS: list[str] = []
 NOTES: list[str] = []
@@ -47,7 +50,11 @@ def note(m: str) -> None:
 
 
 def foot_lowest_z(m, d) -> tuple[float, str]:
-    """默认姿态下所有"脚"相关 geom 的最低点 z 与其所属 body 名。"""
+    """当前姿态下所有"脚"相关 geom 的最低点 z 与其所属 body 名。
+
+    注意 capsule 的下沿是 中心 − (半长 + 半径)：只减半长会漏掉半径，
+    得出"脚悬空"的假结论（半径 8 mm 时误差正好 8 mm）。
+    """
     import mujoco
 
     mujoco.mj_forward(m, d)
@@ -57,10 +64,33 @@ def foot_lowest_z(m, d) -> tuple[float, str]:
         name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b) or ""
         if "foot" not in name.lower() and "toe" not in name.lower():
             continue
-        z = float(d.geom_xpos[g][2]) - float(m.geom_size[g][1])  # capsule 下沿
+        gtype = m.geom_type[g]
+        size = m.geom_size[g]
+        if gtype == mujoco.mjtGeom.mjGEOM_CAPSULE:
+            drop = float(size[1]) + float(size[0])          # 半长 + 半径
+        elif gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
+            drop = float(size[0])
+        else:
+            drop = float(size[1]) if len(size) > 1 else 0.0
+        z = float(d.geom_xpos[g][2]) - drop
         if z < lowest:
             lowest, who = z, name
     return lowest, who
+
+
+def set_pose(m, d, robot: dict, mujoco) -> None:
+    """把模型设到 stance_pose（训练/真机实际使用的初始姿态）。
+
+    注意：不能用 MuJoCo 默认全零姿态做落地测试——那与训练起始状态不一致，
+    会得出误导性结论（例如"出生悬空""1 s 后倾倒"，而 stance_pose 下其实是稳的）。
+    """
+    pose = robot.get("stance_pose") or [j["default"] for j in robot["joints"]]
+    for i, j in enumerate(robot["joints"]):
+        jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j["name"])
+        if jid >= 0:
+            d.qpos[int(m.jnt_qposadr[jid])] = pose[i]
+    d.ctrl[:] = 0.0
+    d.qvel[:] = 0.0
 
 
 def check_robot(name: str, cfg: dict) -> None:
@@ -104,7 +134,8 @@ def check_robot(name: str, cfg: dict) -> None:
                 "（占位质量待 CAD/实测回填）"
             )
 
-    # 3) 站立高度自洽
+    # 3) 站立高度自洽（在 stance_pose 下评估，与训练起始状态一致）
+    set_pose(m, d, robot, mujoco)
     lowest, who = foot_lowest_z(m, d)
     base_h = float(robot.get("geometry", {}).get("base_height_m", 0.0))
     gap = lowest  # 地面在 z=0
@@ -117,10 +148,12 @@ def check_robot(name: str, cfg: dict) -> None:
     elif gap < -0.005:
         note(f"[{name}] 出生时脚底已陷入地面 {abs(gap) * 1000:.1f} mm，初始姿态需抬高基座")
 
-    # 4) 1 秒落地测试
+    # 4) 1 秒静置测试（从 stance_pose 起步，无策略介入，PD 力矩保持）
     n_steps = int(1.0 / m.opt.timestep)
-    for _ in range(n_steps):
-        mujoco.mj_step(m, d)
+    pose = robot.get("stance_pose") or [j["default"] for j in robot["joints"]]
+    hold_pose_steps(
+        m, d, pose, [j["name"] for j in robot["joints"]], prof, mujoco, n_steps
+    )
     quat_w = float(d.qpos[3])
     tilt_deg = float(np.degrees(2 * np.arccos(np.clip(abs(quat_w), -1.0, 1.0))))
     ke = 0.5 * float(np.sum(m.body_mass * np.sum(d.cvel**2, axis=1)))
@@ -131,12 +164,12 @@ def check_robot(name: str, cfg: dict) -> None:
     if not np.isfinite(d.qpos).all():
         fail(f"[{name}] 仿真数值发散（NaN/Inf）")
     if tilt_deg > 45.0:
-        note(
-            f"[{name}] 1s 后倾倒 {tilt_deg:.0f}°：符合预期（尚无控制器），"
-            "需由策略维持平衡；若落地过程异常剧烈，先查质量账与初始高度"
+        fail(
+            f"[{name}] stance_pose 下静置 1s 即倾倒 {tilt_deg:.0f}°："
+            "标称姿态不可站立 → 跑 solve_stance.py 重新求解（否则 RL 每个 episode 开局就摔）"
         )
     else:
-        ok(f"[{name}] 1s 后仍保持直立（默认姿态自稳），可作为 stand 任务的基线")
+        ok(f"[{name}] stance_pose 静置 1s 保持直立（倾斜 {tilt_deg:.1f}°），可作 stand 基线")
 
 
 def main() -> int:

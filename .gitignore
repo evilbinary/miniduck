@@ -79,3 +79,4 @@ dkms.conf
 *.dwo
 train/envs/__pycache__/*.pyc
 body/tools/__pycache__/*.pyc
+.venv

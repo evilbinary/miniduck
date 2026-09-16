@@ -317,12 +317,16 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         emit_body(r, 3)
 
     out += ["  </worldbody>", "  <actuator>"]
+    tau = float(prof.get("stall_torque_nm", 0.5))
     for j in robot["joints"]:
         if j.get("passive"):
             continue
+        # 必须是 motor（力矩）类型，不能是 position/velocity：
+        #   * BAM 的 MujocoController 要求 <motor name=... />，且 name 与关节同名；
+        #   * ctrl 即力矩（gear=1），由环境侧的执行器模型计算（PD 或 BAM）。
         out.append(
-            f'    <position name="{j["name"]}_pos" joint="{j["name"]}" '
-            f'ctrlrange="{j["lo"]} {j["hi"]}"/>  <!-- 输入 = target_pos（见 DESIGN 4.2） -->'
+            f'    <motor name="{j["name"]}" joint="{j["name"]}" gear="1" '
+            f'ctrlrange="{-tau} {tau}"/>  <!-- 力矩执行器：见 DESIGN 3.4 -->'
         )
     out += ["  </actuator>", "</mujoco>"]
     return "\n".join(out) + "\n"
