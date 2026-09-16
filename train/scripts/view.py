@@ -64,8 +64,8 @@ def scripted_action(env: StandEnv, t: float, kind: str) -> list[float]:
 #:   top   俯视（看支撑多边形与质心投影是否在里面）
 CAMERAS = {
     "iso": (135.0, -20.0),
-    "side": (90.0, -5.0),
-    "front": (0.0, -5.0),
+    "side": (90.0, -15.0),
+    "front": (0.0, -15.0),
     "top": (90.0, -89.0),
 }
 
@@ -108,7 +108,7 @@ def balance_report(m, d, env: StandEnv) -> str:
 def camera_distance(env: StandEnv) -> float:
     """按机身体积取景：机器人只有几厘米，固定 1 m 相机距离会小得看不清。"""
     h = float(env.refs["h_ref_m"])
-    return max(0.25, 3.2 * (h + 0.05))
+    return max(0.30, 4.2 * (h + 0.05))
 
 
 def log_setup(env: StandEnv, args) -> None:

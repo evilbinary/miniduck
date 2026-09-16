@@ -12,12 +12,17 @@
 #
 # 建模约定：每个关节必须连接两个不同连杆（parent != child），连杆树无环。
 #           串联关节引入中间连杆（*_link），命名即物理位置。
+#           连杆有两种接入方式（互斥）：
+#             parent_joint  → 由舵机驱动的活动关节
+#             rigid_parent  → 刚性固定关节（无舵机，URDF fixed / MJCF 无 joint），
+#                             用于纯结构件（外形 + 配重），不占舵机、不进策略
+#           刚性连杆可带 role 字段，供生成器选择占位外形。
 #
 # 标注 TBD 的数值为占位（待 CAD 回填 / 装配标定 / 实测），生成器列为 warnings
 # 但不阻断生成；errors 才阻断。
 # =====================================================================
 
-version: 0.2.0
+version: 0.3.0
 updated: 2026-09-16
 
 # ---------------- 全局约定 ----------------
@@ -85,7 +90,12 @@ actuators:
 # ---------------- 机型 ----------------
 robots:
 
-  # ========== miniduck-L：大型版，14 DOF 全给腿 ==========
+  # ========== miniduck-L：大型版，17 舵机 = 腿 14 + 表情 3（颈/喙/尾） ==========
+  # 舵机预算：14 个腿 DOF 全保留（7×2，研究版），另加 3 个表情舵机：
+  #   neck_pitch（点头）/ beak（张嘴）/ tail_pitch（甩尾，同时是尾部配重）。
+  # 头壳与双翅为刚性连杆（无舵机）：头壳保证外观完整，双翅提供侧向配重与惯量。
+  # 表情关节不进策略（expressive: true），由 mind/expression 在 ~20 Hz 独立驱动，
+  # 与 50 Hz 控制环在宿主层合流（同 S 版），因此 obs 61 / act 14 不变。
   miniduck-L:
     servo: xl330_m077
     geometry:
@@ -123,33 +133,53 @@ robots:
       - {name: R_ankle_pitch_link, parent_joint: R_ankle_pitch,  mass_g: 5}     # TBD
       - {name: R_foot,             parent_joint: R_ankle_roll,   mass_g: 15}    # TBD
       - {name: R_toe,              parent_joint: R_toe,          mass_g: 3}     # TBD
+      # ---- 头/喙/尾（3 个表情舵机）----
+      - {name: head,               parent_joint: neck_pitch,      mass_g: 40}    # TBD: 含头壳+配重
+      - {name: beak_link,          parent_joint: beak,            mass_g: 4}     # TBD
+      # 尾：既是表现部件，也是**头部前移质心的配重**（质量/长度按静态平衡调）
+      - {name: tail,               parent_joint: tail_pitch,      mass_g: 30}    # TBD: 配重可调（20~40 g）
+      # ---- 双翅：刚性固定件（无舵机），提供侧向配重与惯量 ----
+      # rigid_xyz 的 y 要落在躯干椭球表面内（半个身宽 ~40.5 mm），否则翅看起来是悬空的
+      - {name: L_wing,             rigid_parent: torso, role: wing, rigid_xyz: [0.0, 0.044, 0.004], mass_g: 14}  # TBD
+      - {name: R_wing,             rigid_parent: torso, role: wing, rigid_xyz: [0.0, -0.044, 0.004], mass_g: 14} # TBD
     joints:
       # ---- 左腿链：torso → yaw → roll → pitch → 膝 → 踝pitch → 踝roll → 脚趾 (7) ----
       - {name: L_hip_yaw,     id: 1,  role: leg, parent: torso,              child: L_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.010, 0.042, -0.018]}    # 髋距加宽：7-DOF 研究版的静态支撑余量（见 geometry.geom_scale 注释）
       - {name: L_hip_roll,    id: 2,  role: leg, parent: L_hip_yaw_link,     child: L_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: -0.30, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
-      - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh,            child: L_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.70, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 腿长恢复 + BAM 求解
+      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.10, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}    # default = stance_pose（solve_stance.py 在 BAM 下重解，含头/尾配重后）
+      - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh,            child: L_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.50, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}   # 同上
       - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank,            child: L_ankle_pitch_link, axis: [0, 1, 0], lo: -1.60, hi: 1.60, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 限位放宽：矮胖短腿体型需要大踝行程
       - {name: L_ankle_roll,  id: 6,  role: leg, parent: L_ankle_pitch_link, child: L_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
       - {name: L_toe,         id: 7,  role: leg, parent: L_foot,             child: L_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.020, 0.0, -0.004], passive: true}  # xyz TBD
       # ---- 右腿链 (7) ----
       - {name: R_hip_yaw,     id: 8,  role: leg, parent: torso,              child: R_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.010, -0.042, -0.018]}   # 髋距加宽（同左）
       - {name: R_hip_roll,    id: 9,  role: leg, parent: R_hip_yaw_link,     child: R_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: -0.30, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
-      - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh,            child: R_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.90, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 同左
+      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.10, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}    # 同左
+      - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh,            child: R_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.50, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}   # 同左；default 必须 == stance_pose（零动作≈站立），曾误留 0.90 导致零动作即前倾
       - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank,            child: R_ankle_pitch_link, axis: [0, 1, 0], lo: -1.60, hi: 1.60, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 同左：放宽踝行程
       - {name: R_ankle_roll,  id: 13, role: leg, parent: R_ankle_pitch_link, child: R_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
       - {name: R_toe,         id: 14, role: leg, parent: R_foot,             child: R_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.020, 0.0, -0.004], passive: true}  # xyz TBD
+      # ---- 表情链 (3)：颈/喙/尾，不进策略（expressive: true），与 S 版同构 ----
+      # 头/翅的质心上移会抬高整机质心 → 尾舵机同时作为配重（见 tail_pitch 限位与 tail 质量）
+      - {name: neck_pitch,    id: 15, role: head, parent: torso,             child: head,              axis: [0, 1, 0], lo: -0.40, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.030],  expressive: true}  # xyz TBD
+      # 喙装在头球赤道高度（几何中心 z≈头球心），x 略小于头球半径 → 与头球重叠贴合，
+      # 否则会看出"悬空的黄条"（实测 x=0.040 时缝 18 mm，x=0.022 时仍剩 2.4 mm）
+      - {name: beak,          id: 16, role: beak, parent: head,              child: beak_link,         axis: [0, 1, 0], lo: 0.00,  hi: 0.50, default: 0.0,  zero_offset: 0.0, xyz: [0.012, 0.0, 0.004], expressive: true}  # xyz TBD
+      - {name: tail_pitch,    id: 17, role: tail, parent: torso,             child: tail,              axis: [0, 1, 0], lo: -0.60, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [-0.055, 0.0, 0.012], expressive: true}  # xyz TBD
     # 三个姿态的职责区分（易混淆，务必分清）：
     #   stance_pose  静态站立姿态：仿真初始状态、悬挂/落地测试、站立基线
     #   default_pos  动作参考位（各关节 default 字段）：target = default + scale·action
     #   safe_pose    异常回位姿态：超时/跌倒/过热时下发
     # 实测结论（check_physics.py + duck_env）：default_pos 不是静态平衡姿态
     # （膝弯曲使质心前移，S 版 0.5 s 内前倾倒地），故另设 stance_pose。
-    stance_pose: [0.0, 0.0, -0.30, 0.70, 0.0, 0.0, 0.0,
-                  0.0, 0.0, -0.30, 0.70, 0.0, 0.0, 0.0]  # 由 solve_stance.py 精确输出（顺序: yaw/roll/hip/knee/ankle/ankle_roll/toe）  # BAM(xl330,m6) 下求解：倾斜 1.34°，高度 130.2 mm（7-DOF 研究版靠结构冗余保静态）
+    # 顺序 = joints 列表顺序 = 总线 ID 升序（末 3 项为 颈/喙/尾 表情关节）
+    stance_pose: [0.0, 0.0, 0.10, 0.50, 0.0, 0.0, 0.0,
+                  0.0, 0.0, 0.10, 0.50, 0.0, 0.0, 0.0,
+                  0.0, 0.0, 0.0]  # 由 solve_stance.py 输出（腿 yaw/roll/hip/knee/ankle/ankle_roll/toe + 颈/喙/尾 中立）；
+                                  # BAM(xl330,m6) 下重解（加头/尾配重后）：倾斜 1.61°、躯干高度 135.0 mm（h_ref 135.1 mm）
     safe_pose: [0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]   # TBD: 标定后回填
+                0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0]   # TBD: 标定后回填（表情关节保持中立）
 
   # ========== miniduck-S：桌面版，腿 6 + 表情 8 = 14 ==========
   miniduck-S:
@@ -198,7 +228,8 @@ robots:
       - {name: head_tilt,     id: 9,  role: head, parent: neck_yaw_link,  child: head,           axis: [0, 1, 0], lo: -0.40, hi: 0.40, default: 0.0, zero_offset: 0.0, xyz: [0.0, 0.0, 0.020], expressive: true}   # xyz TBD
       - {name: head_roll,     id: 10, role: head, parent: head,           child: head_roll_link, axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0],   expressive: true}
       # ---- 喙 (1) ----
-      - {name: beak,          id: 11, role: beak, parent: head,           child: beak_link,      axis: [0, 1, 0], lo: 0.00,  hi: 0.60, default: 0.0, zero_offset: 0.0, xyz: [0.030, 0.0, 0.0], expressive: true}   # xyz TBD
+      # 同 L 版：喙需与头球重叠，否则看起来是悬空的黄条
+      - {name: beak,          id: 11, role: beak, parent: head,           child: beak_link,      axis: [0, 1, 0], lo: 0.00,  hi: 0.60, default: 0.0, zero_offset: 0.0, xyz: [0.008, 0.0, 0.002], expressive: true}   # xyz TBD
       # ---- 尾/翅 (3)：动态平衡辅助 + 表现力 ----
       - {name: tail_pitch,    id: 12, role: tail, parent: torso,          child: tail,           axis: [0, 1, 0], lo: -0.60, hi: 0.60, default: 0.0, zero_offset: 0.0, xyz: [-0.050, 0.0, 0.0], expressive: true}  # xyz TBD
       - {name: L_wing,        id: 13, role: wing, parent: torso,          child: L_wing,         axis: [1, 0, 0], lo: 0.00,  hi: 1.40, default: 0.0, zero_offset: 0.0, xyz: [0.0, 0.040, 0.0],  expressive: true}  # xyz TBD
@@ -220,9 +251,10 @@ generate:
 
 # ---------------- 校验规则（errors 阻断生成，warnings 仅提示） ----------------
 validate:
-  joint_count: {miniduck-L: 14, miniduck-S: 14}
+  # L: 腿 14 + 表情 3（颈/喙/尾）= 17；S: 腿 6 + 表情 8 = 14
+  joint_count: {miniduck-L: 17, miniduck-S: 14}
   id_unique: true
-  id_in_range: [1, 14]
+  id_in_range: [1, 17]
   policy_leg_joints_subset_of_joints: true
   act_dim_matches_leg_joints: true
   obs_dim_formula: "3+3+3+N+N+N+2+2+1+3+2"

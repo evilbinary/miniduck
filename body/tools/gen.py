@@ -140,6 +140,22 @@ def validate(cfg: dict) -> None:
             # 连杆的 parent_joint 必须与其关节的 child 一致
             for l in links:
                 pj = l.get("parent_joint")
+                rp = l.get("rigid_parent")
+                if pj is not None and rp is not None:
+                    err(
+                        f"[{robot_name}] 连杆 {l['name']} 同时声明 parent_joint 与 rigid_parent"
+                        "（接入方式互斥：活动关节 或 刚性固定件）"
+                    )
+                if rp is not None:
+                    if rp not in link_names:
+                        err(f"[{robot_name}] 刚性连杆 {l['name']} 的 rigid_parent 不存在：{rp}")
+                    if rp == l["name"]:
+                        err(f"[{robot_name}] 刚性连杆 {l['name']} 的 rigid_parent 指向自身")
+                    if l.get("mass_g") is None:
+                        warn(
+                            f"[{robot_name}.{l['name']}] 刚性连杆缺 mass_g："
+                            "它通常是配重件，质量影响静态平衡，必须回填"
+                        )
                 if pj is None:
                     continue
                 if pj not in by_name:
@@ -191,17 +207,26 @@ def validate(cfg: dict) -> None:
 
 
 def check_tree(robot_name: str, links: list, by_name: dict) -> str | None:
-    """校验连杆树：恰好一个根、无环、全连通。返回错误串或 None。"""
+    """校验连杆树：恰好一个根、无环、全连通。
+
+    活动关节（parent_joint）与刚性固定件（rigid_parent）都是树的一部分：
+    刚性件若漏算，要么被当成"第二个根"，要么被报成"孤立连杆"。
+    """
     parent_joint = {l["name"]: l.get("parent_joint") for l in links}
-    roots = [n for n, pj in parent_joint.items() if pj is None]
+    rigid_parent = {l["name"]: l.get("rigid_parent") for l in links}
+    roots = [n for n in parent_joint if parent_joint[n] is None and rigid_parent.get(n) is None]
     if len(roots) != 1:
         return f"[{robot_name}] 根连杆数量 {len(roots)} != 1（{roots}）"
     root = roots[0]
     children: dict[str, list[str]] = {l["name"]: [] for l in links}
     for name, pj in parent_joint.items():
-        if pj is None:
+        pr = rigid_parent.get(name)
+        if pj is not None:
+            parent = by_name[pj]["parent"]
+        elif pr is not None:
+            parent = pr
+        else:
             continue
-        parent = by_name[pj]["parent"]
         children.setdefault(parent, []).append(name)
     seen, stack = set(), [root]
     while stack:
@@ -220,14 +245,21 @@ def check_tree(robot_name: str, links: list, by_name: dict) -> str | None:
 # 生成：URDF / MJCF
 # --------------------------------------------------------------------------
 def child_map(robot: dict) -> dict[str, list[dict]]:
-    """parent 连杆名 -> [{'joint': j, 'link': l}]"""
+    """parent 连杆名 -> [{'joint': j|None, 'link': l, 'rigid': bool}]
+
+    rigid=True 表示刚性固定件（URDF fixed / MJCF 无 joint 的嵌套 body），无舵机。
+    """
     by_name = {j["name"]: j for j in robot["joints"]}
     out: dict[str, list[dict]] = {l["name"]: [] for l in robot["links"]}
     for l in robot["links"]:
         pj = l.get("parent_joint")
-        if pj is None:
-            continue
-        out.setdefault(by_name[pj]["parent"], []).append({"joint": by_name[pj], "link": l})
+        rp = l.get("rigid_parent")
+        if pj is not None:
+            out.setdefault(by_name[pj]["parent"], []).append(
+                {"joint": by_name[pj], "link": l, "rigid": False}
+            )
+        elif rp is not None:
+            out.setdefault(rp, []).append({"joint": None, "link": l, "rigid": True})
     return out
 
 
@@ -261,6 +293,17 @@ def gen_urdf(robot_name: str, robot: dict, cfg: dict) -> str:
     for parent, kids in cmap.items():
         for k in kids:
             j, l = k["joint"], k["link"]
+            if k["rigid"]:
+                # 刚性固定件：URDF 用 type="fixed"，无 axis/limit
+                xyz = l.get("rigid_xyz") or [0.0, 0.0, 0.0]
+                out += [
+                    f'  <joint name="{l["name"]}__fixed" type="fixed">',
+                    f'    <parent link="{parent}"/>',
+                    f'    <child link="{l["name"]}"/>',
+                    f'    <origin xyz="{xyz[0]} {xyz[1]} {xyz[2]}" rpy="0 0 0"/>  <!-- 刚性固定件（无舵机），TBD: 由 CAD 回填 -->',
+                    "  </joint>",
+                ]
+                continue
             jtype = "revolute"
             xyz = j.get("xyz") or [0.0, 0.0, 0.0]
             out += [
@@ -279,11 +322,17 @@ def gen_urdf(robot_name: str, robot: dict, cfg: dict) -> str:
 
 
 def role_of_link(robot: dict, link_name: str) -> str:
-    """连杆所属部位：由连接它的关节的 role 决定（torso 无 parent_joint）。"""
+    """连杆所属部位：连杆显式 role 优先，其次由连接它的关节 role 决定。
+
+    刚性固定件（翅/配重等）没有关节，必须靠显式 role 或名字规则认部位。
+    """
     pj = None
     for l in robot["links"]:
-        if l["name"] == link_name:
-            pj = l.get("parent_joint")
+        if l["name"] != link_name:
+            continue
+        if l.get("role"):
+            return str(l["role"])
+        pj = l.get("parent_joint")
     if pj is None:
         return "torso"
     for j in robot["joints"]:
@@ -389,7 +438,11 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
     prof = cfg["servo_profiles"][robot["servo"]]
     cmap = child_map(robot)
     by_link = {l["name"]: l for l in robot["links"]}
-    roots = [n for n, l in by_link.items() if l.get("parent_joint") is None]
+    roots = [
+        n
+        for n, l in by_link.items()
+        if l.get("parent_joint") is None and l.get("rigid_parent") is None
+    ]
 
     out = [
         f'<mujoco model="{robot_name}">',
@@ -427,16 +480,23 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         pos = [0.0, 0.0, 0.0]
         # 关节的安装偏移记在关节上：此处用父关节的 xyz 作为 body pos
         pj = l.get("parent_joint")
+        rigid = l.get("rigid_parent")
         if pj:
             by_name = {j["name"]: j for j in robot["joints"]}
             pos = by_name[pj].get("xyz") or pos
+        elif rigid:
+            # 刚性固定件：没有关节，偏移记在连杆自身的 rigid_xyz 上
+            pos = l.get("rigid_xyz") or pos
         else:
             # 根连杆：初始高度取几何里的站立基座高度（与 reward 的 h_ref 同源），
             # 避免机器人出生在地面之下
             pos = [0.0, 0.0, float(robot.get("geometry", {}).get("base_height_m", 0.1))]
         out.append(f'{pad}<body name="{link_name}" pos="{pos[0]} {pos[1]} {pos[2]}">')
-        if pj is None:
+        if pj is None and rigid is None:
             out.append(f"{pad}  <freejoint/>")
+        elif pj is None:
+            # 刚性件：不写 <joint>，MuJoCo 视为与父 body 刚性焊接
+            out.append(f"{pad}  <!-- 刚性固定件：无 joint，与父连杆刚性连接 -->")
         else:
             by_name = {j["name"]: j for j in robot["joints"]}
             j = by_name[pj]

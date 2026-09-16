@@ -3,9 +3,10 @@
 """body/tools/verify_gen.py — 校验 gen.py 的生成产物是否自洽（回归测试）。
 
 检查项：
-    URDF    XML 良构；link/joint 数量与 robot.yaml 一致；parent/child 均可解析
-    MJCF    XML 良构；body 数量一致；hinge 关节数量一致；执行器数 = 非被动关节数
-            （注意排除 <default> 块中的模板元素）
+    URDF    XML 良构；link 数一致；joint 数 = 活动关节 + 刚性固定件（type="fixed"）；
+            parent/child 均可解析
+    MJCF    XML 良构；body 数量一致；hinge 关节数 = 活动关节数（刚性固定件无 joint）；
+            执行器数 = 非被动关节数（注意排除 <default> 块中的模板元素）
     yc      生成的两个 .yac 文件能被 **yc 编译器**编译执行，且通过 LIR 不变量校验
             （yac 是解释器，生产路径用 yc：ANF → LIR → 机器码）
 
@@ -81,6 +82,8 @@ def main() -> int:
         n_joints = len(robot["joints"])
         n_links = len(robot["links"])
         n_passive = sum(1 for j in robot["joints"] if j.get("passive"))
+        # 刚性固定件（翅/配重等）：URDF 里是 type="fixed" 的 joint，MJCF 里是无 joint 的 body
+        n_rigid = sum(1 for l in robot["links"] if l.get("rigid_parent"))
 
         # ---- URDF ----
         up = ROOT / gen["urdf"]["target"].format(robot=robot_name)
@@ -91,7 +94,15 @@ def main() -> int:
         links = urdf.findall("link")
         joints = urdf.findall("joint")
         check(len(links) == n_links, f"[{robot_name}] URDF link {len(links)} == {n_links}")
-        check(len(joints) == n_joints, f"[{robot_name}] URDF joint {len(joints)} == {n_joints}")
+        check(
+            len(joints) == n_joints + n_rigid,
+            f"[{robot_name}] URDF joint {len(joints)} == 活动 {n_joints} + 刚性 {n_rigid}",
+        )
+        fixed = [j for j in joints if j.get("type") == "fixed"]
+        check(
+            len(fixed) == n_rigid,
+            f"[{robot_name}] URDF type=fixed 关节 {len(fixed)} == 刚性连杆 {n_rigid}",
+        )
         names = {l.get("name") for l in links}
         dangling = [
             j.get("name")

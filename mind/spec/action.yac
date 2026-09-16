@@ -32,7 +32,7 @@ let safety = [
   ["inference_error",    "safe_pose",          "推理失败下一帧必须回 safe_pose"]
 ] in
 
--- 表情关节（S 版）：不进策略，独立任务驱动
+-- 表情关节（L: 颈/喙/尾 3 个；S: 颈/头/喙/尾/翅 8 个）：不进策略，独立任务驱动
 let expressive = [
   ["rate_hz",            20],
   ["ramp_rad_per_s",     3.0],     -- 限速，避免表情动作扰动步态
