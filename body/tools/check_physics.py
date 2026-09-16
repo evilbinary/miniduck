@@ -30,7 +30,23 @@ ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
 
 sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层
-from actuators import hold_pose_steps  # noqa: E402
+from actuators import (  # noqa: E402
+    bam_available,
+    build_bam_controller,
+    hold_pose_steps,
+    sync_bam_target_state,
+)
+
+
+def _bam_usable() -> bool:
+    return bam_available()
+
+
+def _is_passive(robot: dict, joint_name: str) -> bool:
+    for j in robot["joints"]:
+        if j["name"] == joint_name:
+            return bool(j.get("passive"))
+    return False
 
 OKS: list[str] = []
 FAILS: list[str] = []
@@ -93,7 +109,7 @@ def set_pose(m, d, robot: dict, mujoco) -> None:
     d.qvel[:] = 0.0
 
 
-def check_robot(name: str, cfg: dict) -> None:
+def check_robot(name: str, cfg: dict, models: list[str]) -> None:
     try:
         import mujoco
     except ImportError:
@@ -148,40 +164,72 @@ def check_robot(name: str, cfg: dict) -> None:
     elif gap < -0.005:
         note(f"[{name}] 出生时脚底已陷入地面 {abs(gap) * 1000:.1f} mm，初始姿态需抬高基座")
 
-    # 4) 1 秒静置测试（从 stance_pose 起步，无策略介入，PD 力矩保持）
+    # 4) 静置测试：**对每种执行器模型分别验证**
+    #    「pd / bam 可切换」是架构特性，必须被测试保证而不是靠假设：
+    #      默认模型（robot.yaml actuators.default）站不住 → FAIL（训练会开局就摔）
+    #      非默认模型站不住 → NOTE（切过去之前需重跑 solve_stance.py）
+    act_cfg = cfg.get("actuators") or {}
+    default_model = act_cfg.get("default", "pd")
+    solved_with = act_cfg.get("pose_solved_with")
     n_steps = int(1.0 / m.opt.timestep)
     pose = robot.get("stance_pose") or [j["default"] for j in robot["joints"]]
-    hold_pose_steps(
-        m, d, pose, [j["name"] for j in robot["joints"]], prof, mujoco, n_steps
-    )
-    quat_w = float(d.qpos[3])
-    tilt_deg = float(np.degrees(2 * np.arccos(np.clip(abs(quat_w), -1.0, 1.0))))
-    ke = 0.5 * float(np.sum(m.body_mass * np.sum(d.cvel**2, axis=1)))
-    ok(
-        f"[{name}] 1s 落地：高度 {d.qpos[2] * 1000:.1f} mm，倾斜 {tilt_deg:.1f}°，"
-        f"触点 {d.ncon}，动能 {ke:.2e} J"
-    )
-    if not np.isfinite(d.qpos).all():
-        fail(f"[{name}] 仿真数值发散（NaN/Inf）")
-    if tilt_deg > 45.0:
-        fail(
-            f"[{name}] stance_pose 下静置 1s 即倾倒 {tilt_deg:.0f}°："
-            "标称姿态不可站立 → 跑 solve_stance.py 重新求解（否则 RL 每个 episode 开局就摔）"
+    joint_names = [j["name"] for j in robot["joints"]]
+
+    for model in models:
+        if model == "bam" and not _bam_usable():
+            note(f"[{name}] 跳过 bam 检查：BAM 不可用（需 Python ≥3.12 + better-actuator-models）")
+            continue
+        set_pose(m, d, robot, mujoco)
+        bam_ctrl = None
+        if model == "bam":
+            bam_ctrl = build_bam_controller(
+                prof, m, d, [n for n in joint_names if not _is_passive(robot, n)]
+            )
+        if bam_ctrl is not None:
+            sync_bam_target_state(bam_ctrl, pose)
+        hold_pose_steps(
+            m, d, pose, joint_names, prof, mujoco, n_steps,
+            actuator_model=model, bam_controller=bam_ctrl,
         )
-    else:
-        ok(f"[{name}] stance_pose 静置 1s 保持直立（倾斜 {tilt_deg:.1f}°），可作 stand 基线")
+        quat_w = float(d.qpos[3])
+        tilt_deg = float(np.degrees(2 * np.arccos(np.clip(abs(quat_w), -1.0, 1.0))))
+        ke = 0.5 * float(np.sum(m.body_mass * np.sum(d.cvel**2, axis=1)))
+        msg = (
+            f"[{name}/{model}] 静置 1s：高度 {d.qpos[2] * 1000:.1f} mm，倾斜 {tilt_deg:.1f}°，"
+            f"触点 {d.ncon}，动能 {ke:.2e} J"
+        )
+        if not np.isfinite(d.qpos).all():
+            fail(f"[{name}/{model}] 仿真数值发散（NaN/Inf）")
+            continue
+        tag = "（默认模型）" if model == default_model else ""
+        if tilt_deg <= 45.0:
+            ok(msg + f" → 可作 stand 基线{tag}")
+        elif model == default_model:
+            fail(
+                msg + f"：**默认**执行器模型下 stance_pose 不可站立 → 跑 "
+                f"solve_stance.py --actuator {default_model} 重解"
+                f"（当前姿态标注为在 {solved_with} 下求解）"
+            )
+        else:
+            note(
+                msg + f"：非默认模型（{model}）下站不住；切到 {model} 前需重跑 "
+                f"solve_stance.py --actuator {model} 并更新 stance_pose/default"
+            )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--robot", default=None, help="只查指定机型")
+    ap.add_argument("--actuator", default="all", choices=["all", "pd", "bam"],
+                    help="要验证的执行器模型（默认两种都验）")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(ROBOT_YAML.read_text(encoding="utf-8"))
     names = [args.robot] if args.robot else list(cfg["robots"])
+    models = ["pd", "bam"] if args.actuator == "all" else [args.actuator]
 
     for n in names:
-        check_robot(n, cfg)
+        check_robot(n, cfg, models)
 
     for m in OKS:
         print(f"PASS  {m}")

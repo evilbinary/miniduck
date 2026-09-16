@@ -18,14 +18,32 @@
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| Python | 3.11+ | 生成器、校验、训练侧 |
-| PyYAML | 6.x（`pip install pyyaml`） | 读 `body/robot.yaml` |
+| Python | **3.12**（推荐项目 venv） | 生成器、校验、训练侧 |
+| PyYAML | 6.x | 读 `body/robot.yaml` |
 | **yc 编译器**（必需） | 兄弟目录 `../yac` | 编译执行 `mind/**/*.yac`：ANF → LIR → 机器码 |
 | yac 解释器（可选） | 同上 | 仅在需要 ANF/CPS **双解释器互证**时使用 |
-| MuJoCo（可选） | `python -m pip install mujoco` | `check_physics.py` 物理健全性检查、后续仿真后端 |
+| MuJoCo | 3.2.2 | 物理后端、`check_physics.py` |
+| **BAM**（Better Actuator Models） | `better-actuator-models[mujoco]` | 执行器拟真模型（电压控制 + 直流电机 + M1–M6 摩擦 + 掉压） |
 
-> 注意别用错解释器：如果 `pip` 和 `python` 指向不同环境（例如 Anaconda 的 pip +
-> Windows Store 的 python），请用 `python -m pip install mujoco` 安装到实际运行的那一个。
+### 项目虚拟环境（推荐）
+
+**BAM 要求 Python ≥3.12,<3.13**，因此项目用独立 venv：
+
+```sh
+cd miniduck
+python3.12 -m venv .venv                  # 或改用本机任意 3.12 解释器
+./.venv/Scripts/python -m pip install numpy pyyaml mujoco==3.2.2 "better-actuator-models[mujoco]"
+```
+
+之后所有命令把 `python` 换成 `./.venv/Scripts/python`（Linux/macOS 为 `.venv/bin/python`）。
+不装 BAM 也能跑：环境会自动回退到 `pd` 模型。
+
+> **本机已知坑**：
+> 1. `pip` 与 `python` 可能指向不同环境（如 Anaconda 的 pip + Windows Store 的 python）
+>    → 一律用 `python -m pip install ...`。
+> 2. 在 Anaconda 的 Python 3.12 下，**mujoco ≥3.3 的 DLL 加载失败**
+>    （`WinError 1114`），3.2.2 正常 → venv 里固定 3.2.2。
+> 3. BAM 在 Python 3.11 下装不上（requires-python 限制）。
 
 先构建一次（`make` 会同时产出 `yac` 与 `yc`）：
 
@@ -78,6 +96,12 @@ python train/envs/tests/obs_parity.py
 cd train/envs && python duck_env.py --backend mujoco
 python duck_env.py --robot miniduck-L --backend mujoco    # L 版
 python duck_env.py --backend null                         # 占位后端（无 MuJoCo 时）
+
+# 7) 执行器模型切换（见 DESIGN 3.4）
+python duck_env.py --actuator pd     # 力矩级 PD 基线（快，算法调试）
+python duck_env.py --actuator bam    # BAM：电压+直流电机+M1-M6 摩擦+掉压（训练默认）
+python duck_env.py --actuator auto   # 按 body/robot.yaml 的 actuators.default
+python ../../body/tools/check_physics.py --actuator all   # 两种模型都验静置稳定性
 ```
 
 ### 一键跑全部
@@ -122,6 +146,7 @@ mind/                 「心智」真机软件（yac，运行在 yiyiya OS）
   mindd/  updaterd/   高层意图、OTA（待实现）
 train/                训练侧（Python）
   envs/spec_loader.py 受限子集解析 mind/spec/*.yac（不执行代码）
+  envs/actuators.py   ★ 执行器模型层：PdTorque ↔ BAM（含上游垫片，见 DESIGN 3.4）
   envs/duck_env.py    环境：MujocoPhysics 后端 + build_obs / reward / StandEnv
   envs/tests/         obs 双侧对拍（发布门禁的提前版）
   ppo/  export.py     待实现
@@ -154,10 +179,12 @@ python verify/policy_forward.py --blob ...          # 与 ONNX golden 帧逐帧�
 
 当前已可用的部分：环境骨架、观测构建、奖励计算（均由 spec 驱动）。
 已完成：环境骨架、观测构建、奖励计算（均由 spec 驱动）、**MuJoCo 后端**
-（`envs/duck_env.py` 的 `MujocoPhysics`，零动作可稳站 4 s）、静态姿态求解。
+（零动作可稳站 4 s）、静态姿态求解、**执行器模型层**（PD ↔ BAM 可切换，
+两版机型 × 两种模型静置稳定性均通过）。
 
 未完成的：**MJX/Warp GPU 并行后端**（大规模并行时替换 MuJoCo）、PPO 训练循环、
-ONNX/blob 导出、真机 `robotd` 宿主运行时。
+ONNX/blob 导出、真机 `robotd` 宿主运行时、**执行器台架辨识**
+（BAM 内置参数：XL330 有 M1–M6 但对象是 M288；STS3215 只有 M1，STS3032 无内置）。
 
 ---
 
@@ -189,3 +216,12 @@ ONNX/blob 导出、真机 `robotd` 宿主运行时。
 **`h_ref_m` 引用解析失败** — 检查 `body/robot.yaml` 的
 `robots.<机型>.geometry.base_height_m` 是否存在；spec 里写的是
 `"@robot.geometry.base_height_m"`，几何量不在 spec 里硬编码。
+
+**`[warn] BAM 不可用…回退 pd`** — 当前解释器 <3.12 或未装 BAM。
+用项目 venv（`./.venv/Scripts/python`）运行；若确实不需要拟真模型，
+把 `robot.yaml` 的 `actuators.default` 改成 `pd` 即可，不必每次都回退。
+
+**`[warn] stance_pose 是在 xx 下求解的，当前执行器为 yy`** — 静态站立姿态
+与执行器模型相关（实测 L 版：PD 下需 hip/ankle=0.10/−0.10，BAM 下需 0.20/−0.20）。
+执行 `python body/tools/solve_stance.py --actuator <当前模型>` 重解并更新
+`stance_pose` 与腿关节 `default`，再把 `actuators.pose_solved_with` 改成同一模型。

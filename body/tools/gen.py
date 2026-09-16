@@ -61,6 +61,27 @@ def validate(cfg: dict) -> None:
     rules = cfg.get("validate", {})
     robots = cfg.get("robots", {})
     profiles = cfg.get("servo_profiles", {})
+    act = cfg.get("actuators", {})
+
+    # 0) 执行器模型与姿态求解的一致性：姿态是在某个执行器模型下求解的，
+    #    换模型后原来求解的姿态可能不再是静态平衡姿态（实测 L 版：
+    #    PD 下 hip/ankle=0.10/-0.10，BAM 下需要 0.20/-0.20）。
+    if act:
+        default_model = act.get("default")
+        solved_with = act.get("pose_solved_with")
+        if default_model not in ("pd", "bam"):
+            err(f"actuators.default={default_model!r} 非法（应为 pd | bam）")
+        if solved_with != default_model:
+            warn(
+                f"actuators.pose_solved_with={solved_with} != default={default_model}："
+                "stance_pose/default 不是在当前默认执行器模型下求解的，"
+                "可能站不住 → 重跑 python body/tools/solve_stance.py --actuator "
+                f"{default_model}"
+            )
+        for name, robot in robots.items():
+            prof = profiles.get(robot.get("servo"), {})
+            if default_model == "bam" and not prof.get("bam"):
+                err(f"[{name}] 默认执行器模型为 bam，但舵机档 {robot.get('servo')} 缺 bam 配置")
 
     for robot_name, robot in robots.items():
         joints = robot.get("joints", [])

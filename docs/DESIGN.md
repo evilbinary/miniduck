@@ -151,6 +151,60 @@ autodiff、无 FFI 仿真接口）。因此：
 - **峰值电流折算**：S 版 STS3032 按 1.5 A/个堵转估算，14 个同时堵转为 21 A；实际按「≤6 个关节同时大负载」折算，总线电源按 **≥ 8 A 峰值** 选取（M1 实测确认）；
 - **总线带宽核算（关键前提）**：50 Hz × 14 舵机，每帧一次 sync_read（pos/vel/temp/load 四字段）+ 一次 sync_write，115200 波特率下大概率不够用。M1 需实测确定波特率（500 k / 1 M）或裁剪读取字段（如温度/负载降到 10 Hz 轮询）。此项不确认，「50 Hz 无压力」的结论不成立。
 
+### 3.4 执行器建模（PD 基线 ↔ BAM 可切换）
+
+**问题**：MuJoCo 内置 `<position kp kv>` 把舵机当成"瞬时到位的位置源"，而
+XL330 / STS3032 实际是**有电流限制的位置伺服 + 有刷直流电机 + 减速箱**。
+在快速摆动、大负载、堵转附近两者差异巨大——用理想位置源训练的策略上真机会
+力矩过大、响应过快，且缺少摩擦死区与掉压带来的行为特征。
+
+**方案**：MJCF 一律使用**力矩执行器** `<motor gear="1">`（这是 BAM 的硬性要求，
+也避免把控制律藏进仿真引擎），控制律放在 Python 侧。两种模型可切换，
+`body/robot.yaml` 的 `actuators` 段是单一来源：
+
+| 模型 | 内容 | 用途 | 速度 |
+|------|------|------|------|
+| `pd` | 力矩级 PD：τ = kp·(q*−q) − kv·q̇，按堵转扭矩裁剪（有增益上限/饱和/跟随误差） | 算法调试、快速回归 | 快 |
+| `bam` | Better Actuator Models（Rhoban/bam，ICRA 2025）：电压控制 + 直流电机力矩 + M1–M6 非线性摩擦（Stribeck / 负载相关 / 方向相关 / 二次项）+ 掉压 | **训练与上台默认** | 慢 |
+
+切换点：`StandEnv(actuator_model="auto|pd|bam")` / CLI `--actuator`；`auto` 读
+`actuators.default`，BAM 不可用时按 `fallback_to_pd_on_error` 回退。
+
+**内置辨识参数的可用性（实测，非推测）**：
+
+- **XL330（L 版）**：BAM 内置 **M1–M6**，训练用 M6。但辨识对象是
+  **XL330-M288-T**，而本项目选型是 M077（齿比不同）→ 需台架重新辨识，
+  或整机改用 M288。
+- **Feetech STS3215（S 版近似）**：BAM **只内置 M1**；STS3032 更无内置参数
+  → M2–M6 必须自行辨识。
+
+**已识别并显式规避的上游问题（BAM 1.0.2）**：
+
+1. Feetech 执行器的内环状态 `q_target_smooth` 只在 `load_log()` 里初始化，
+   走内置参数路径（`load_model`）会 `AttributeError`；
+2. BAM 用 `dt = data.time − last_ts` 计算控制周期，若复用同一个 controller
+   做多次 `mj_resetData`（例如求解器逐候选搜索），必须把 `last_ts` 归零，
+   否则 `dt` 为负、限速项反向、控制错乱。
+
+两处均在 `train/envs/actuators.py` 中有显式垫片与注释。
+
+**姿态随执行器模型变化（关键）**：静态站立姿态与执行器模型相关——实测 L 版
+在 PD 下需 hip/ankle = 0.10/−0.10，在 BAM 下需 0.20/−0.20。因此：
+
+- `robot.yaml` 记录 `actuators.pose_solved_with`，生成器在它与 `default`
+  不一致时**告警**；
+- `check_physics.py` 对**两种模型分别**验证静置稳定性：默认模型站不住 → FAIL，
+  非默认模型站不住 → NOTE（切过去前需重跑 `solve_stance.py --actuator`）。
+
+**环境要求**：BAM 需 **Python ≥3.12**（本机 `python` 为 3.11，不可用）→ 项目
+虚拟环境 `.venv`（见 README）。GPU 并行时走 mjlab + MuJoCo Warp
+（`better-actuator-models[mjlab]`）。
+
+**台架辨识（M1 阶段）**：BAM 的辨识流程需要**倒立摆试验台**
+（pendulum test bench），在变化负载下录轨迹后拟合摩擦参数（其
+`identification` extra 依赖 `rustypot` / `dynamixel_sdk` / `optuna`）。
+待辨识清单：XL330-M077（或改选 M288）、STS3032。
+
 ## 4. 强化学习环境（Python 训练 + yac 规范）
 
 > obs 定义、reward 公式、动作映射、域随机化参数以 yac 规范（`mind/spec/`）为单一来源；
@@ -522,7 +576,7 @@ loop(0, stance_pose, 1.0, 0.0, 0)  -- 从静态站立姿态起步；相位初始
 
 | 阶段 | 内容 | 产出 |
 |------|------|------|
-| M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
+| M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** + **执行器台架辨识**（倒立摆台架，XL330-M077 / STS3032 的 BAM 参数） | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过）、辨识参数 JSON，可仿真模型 |
 | M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/` + `train/envs/`；纯函数核心冒烟测试（yc 编译执行 + LIR 不变量）、**obs 双侧对拍**、**MuJoCo 物理健全性检查**均通过；**MuJoCo 后端接入**，静态标称姿态由 `solve_stance.py` 求解（零动作可稳站 4 s） |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
@@ -581,6 +635,7 @@ miniduck/
 ├── train/                       # 训练侧（Python + GPU，只在训练 PC 上）
 │   ├── envs/                    # 环境：从 spec/ 加载规范（MuJoCo/MJX 后端待接入）
 │   │   ├── spec_loader.py       #   受限子集解析 mind/spec/*.yac（不执行代码）
+│   │   ├── actuators.py         #   ★ 执行器模型层：PdTorque ↔ BAM（含上游垫片）
 │   │   ├── duck_env.py          #   DuckState / build_obs / reward / StandEnv
 │   │   └── tests/obs_parity.py  #   ★ Python 与 yac 两侧 build_obs 逐位对拍
 │   ├── ppo/                     # PPO 主循环、超参（L: obs61/act14；S: obs37/act6）

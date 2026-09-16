@@ -70,6 +70,18 @@ servo_profiles:
       vin_min: 5.0
       note: "STS3032 无内置参数：暂用 STS3215@7.4V 的 M1 近似，需自行辨识后替换"
 
+# ---------------- 执行器模型（仿真拟真度开关，见 DESIGN 3.4） ----------------
+# pd   力矩级 PD 基线：tau = kp·(q*−q) − kv·q̇（有增益上限/饱和/跟随误差），
+#      比"理想位置源"接近真机，但不含摩擦非线性、掉压、齿隙。快，适合算法调试。
+# bam  Better Actuator Models：电压控制 + 直流电机力矩 + M1–M6 非线性摩擦 +
+#      掉压；训练与上台默认用这个（拟真度高，慢一些）。
+actuators:
+  default: bam              # 训练/仿真默认：pd | bam
+  fallback_to_pd_on_error: true   # BAM 不可用（Python<3.12/未装/引擎不兼容）时回退
+  pose_solved_with: bam     # ★ 当前 stance_pose/default 是在哪种模型下求解的；
+                            #   改这一项必须重跑 solve_stance.py 并重跑回归
+  require_bam_for_export: true    # 上台策略必须在 bam 下训练（导出元数据记录）
+
 # ---------------- 机型 ----------------
 robots:
 
@@ -78,9 +90,10 @@ robots:
     servo: xl330_m077
     geometry:
       # 站立时躯干离地目标高度（reward 的 h_ref）
-      # 由 solve_stance.py 求解为 0.128 m（占位几何下可达值；声明 0.150 超出腿长范围，
-      # 会导致高度奖励永远达不到 1.0）→ CAD 回填真实连杆后需重跑求解。
-      base_height_m: 0.128
+      # 由 solve_stance.py 在 BAM(xl330,m6) 下求解为 0.126 m（占位几何下可达值；
+      # 原声明 0.150 超出腿长范围，会让高度奖励永远达不到 1.0）
+      # → CAD 回填真实连杆与质量后需重跑求解。
+      base_height_m: 0.126
     policy:
       # 策略动作向量顺序（= obs 中 joint 段顺序），也是 50 Hz 下发的关节
       leg_joints: [L_hip_yaw, L_hip_roll, L_hip_pitch, L_knee_pitch, L_ankle_pitch, L_ankle_roll, L_toe,
@@ -111,17 +124,17 @@ robots:
       # ---- 左腿链：torso → yaw → roll → pitch → 膝 → 踝pitch → 踝roll → 脚趾 (7) ----
       - {name: L_hip_yaw,     id: 1,  role: leg, parent: torso,              child: L_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, 0.0]}    # xyz TBD
       - {name: L_hip_roll,    id: 2,  role: leg, parent: L_hip_yaw_link,     child: L_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.10, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 求解
+      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.20, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
       - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh,            child: L_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
-      - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank,            child: L_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.10, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
+      - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank,            child: L_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.20, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
       - {name: L_ankle_roll,  id: 6,  role: leg, parent: L_ankle_pitch_link, child: L_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
       - {name: L_toe,         id: 7,  role: leg, parent: L_foot,             child: L_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, -0.010], passive: true}  # xyz TBD
       # ---- 右腿链 (7) ----
       - {name: R_hip_yaw,     id: 8,  role: leg, parent: torso,              child: R_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.030, 0.0, 0.0]}   # xyz TBD
       - {name: R_hip_roll,    id: 9,  role: leg, parent: R_hip_yaw_link,     child: R_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.10, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 求解
+      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.20, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
       - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh,            child: R_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
-      - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank,            child: R_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.10, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
+      - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank,            child: R_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.20, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
       - {name: R_ankle_roll,  id: 13, role: leg, parent: R_ankle_pitch_link, child: R_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
       - {name: R_toe,         id: 14, role: leg, parent: R_foot,             child: R_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, -0.010], passive: true}  # xyz TBD
     # 三个姿态的职责区分（易混淆，务必分清）：
@@ -130,8 +143,8 @@ robots:
     #   safe_pose    异常回位姿态：超时/跌倒/过热时下发
     # 实测结论（check_physics.py + duck_env）：default_pos 不是静态平衡姿态
     # （膝弯曲使质心前移，S 版 0.5 s 内前倾倒地），故另设 stance_pose。
-    stance_pose: [0.0, 0.0, 0.10, 0.0, -0.10, 0.0, 0.0,
-                  0.0, 0.0, 0.10, 0.0, -0.10, 0.0, 0.0]  # solve_stance.py 求解（静置倾斜 0.98°）
+    stance_pose: [0.0, 0.0, 0.20, 0.0, -0.20, 0.0, 0.0,
+                  0.0, 0.0, 0.20, 0.0, -0.20, 0.0, 0.0]  # BAM(xl330, m6) 下求解：倾斜 1.95°，高度 125.5 mm
     safe_pose: [0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]   # TBD: 标定后回填
 

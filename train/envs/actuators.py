@@ -79,7 +79,7 @@ def build_bam_controller(
         raise ValueError("servo_profiles 缺少 bam 配置段")
 
     model = load_model(motor_name=bam_cfg["motor_name"], model=bam_cfg["model"])
-    return MujocoController(
+    ctrl = MujocoController(
         model=model,
         actuator=list(joint_names),
         mujoco_model=mj_model,
@@ -87,6 +87,41 @@ def build_bam_controller(
         vin_drop_resistance=bam_cfg.get("vin_drop_resistance"),
         vin_min=bam_cfg.get("vin_min"),
     )
+
+    # ---- 上游兼容垫片（BAM 1.0.2 的 Feetech 执行器缺初始化）----
+    # bam/feetech/actuator.py 的 compute_control 依赖运行期状态 q_target_smooth
+    # （限速后的内部目标），但该属性只在 load_log() 里创建：
+    #     self.q_target_smooth = np.zeros_like(self.kp)
+    # 走内置参数路径（load_model）时不会调用 load_log → AttributeError。
+    # 这里显式补上，并在 reset 时同步到初始姿态（见 sync_bam_target_state），
+    # 避免开局出现一段"目标从 0 缓慢爬升"的虚假瞬态。
+    act = model.actuator
+    if not hasattr(act, "q_target_smooth"):
+        import numpy as np
+
+        act.q_target_smooth = np.zeros(len(joint_names))
+        ctrl._miniduck_shimmed = True
+
+    return ctrl
+
+
+def sync_bam_target_state(ctrl, pose: list[float]) -> None:
+    """把 BAM 的运行期状态对齐到"仿真刚重置"的状态。
+
+    ★ 必须做两件事，否则结果会错：
+      1. q_target_smooth ← pose：它是内环的限速平滑目标（上游只在 load_log 里初始化）；
+      2. last_ts ← 0：BAM 用 `dt = data.time − last_ts` 计算控制周期，
+         而 mj_resetData 会把 data.time 归零。若 last_ts 还停留在上一段仿真
+         （例如求解器逐个候选复用时），dt 会变成负数 → 限速项反向 → 控制错乱。
+    """
+    import numpy as np
+
+    act = getattr(ctrl, "model", None)
+    act = getattr(act, "actuator", None)
+    if act is not None and hasattr(act, "q_target_smooth"):
+        act.q_target_smooth = np.zeros(len(pose)) + np.asarray(pose, dtype=float)
+    if hasattr(ctrl, "last_ts"):
+        ctrl.last_ts = 0.0
 
 
 def hold_pose_steps(
@@ -97,6 +132,8 @@ def hold_pose_steps(
     prof: dict,
     mujoco,
     n_steps: int,
+    actuator_model: str = "pd",
+    bam_controller=None,
 ) -> None:
     """用 PD 力矩把关节保持在 pose 上并推进 n_steps 个物理步。
 
@@ -111,9 +148,20 @@ def hold_pose_steps(
         aid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
         if jid >= 0 and aid >= 0:
             ids.append((i, int(m.jnt_qposadr[jid]), int(m.jnt_dofadr[jid]), int(aid)))
+    use_bam = actuator_model == "bam" and bam_controller is not None
+    if use_bam:
+        bam = bam_controller
+        # 被动关节（如脚趾）没有执行器，BAM 控制器里没有对应条目 → 跳过
+        known = set(getattr(bam, "dof_to_q_target", {}) or {})
+        for i, name in enumerate(joint_names):
+            if not known or name in known:
+                bam.set_q_target(name, pose[i])
     for _ in range(n_steps):
-        for i, qadr, vadr, aid in ids:
-            d.ctrl[aid] = pd.torque(pose[i], float(d.qpos[qadr]), float(d.qvel[vadr]))
+        if use_bam:
+            bam.update()                      # BAM 自行写 ctrl
+        else:
+            for i, qadr, vadr, aid in ids:
+                d.ctrl[aid] = pd.torque(pose[i], float(d.qpos[qadr]), float(d.qvel[vadr]))
         mujoco.mj_step(m, d)
 
 

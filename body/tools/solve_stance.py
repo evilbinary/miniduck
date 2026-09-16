@@ -29,7 +29,11 @@ ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
 
 sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层
-from actuators import hold_pose_steps  # noqa: E402
+from actuators import (  # noqa: E402
+    build_bam_controller,
+    hold_pose_steps,
+    sync_bam_target_state,
+)
 
 
 def leg_joints(robot: dict) -> tuple[list[str], list[str], list[str], dict[str, int]]:
@@ -54,7 +58,10 @@ def joint_addrs(m, mujoco, joint_names: list[str]):
     return qadr, act
 
 
-def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot) -> tuple[float, float, float]:
+def simulate(
+    m, d, pose, qadr, act, seconds, mujoco, torso_id, robot,
+    actuator_model="pd", bam_controller=None,
+) -> tuple[float, float, float]:
     """把关节设到 pose 静置 seconds 秒，返回 (最终倾斜°, 躯干高度 mm, 动能 J)。"""
     mujoco.mj_resetData(m, d)
     for i, adr in enumerate(qadr):
@@ -64,11 +71,15 @@ def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot) -> tuple[f
     d.qvel[:] = 0.0
     mujoco.mj_forward(m, d)
 
-    # 力矩执行器：必须用 PD 力矩保持姿态（不能直接写 ctrl=角度）
+    # 力矩执行器：必须按力矩语义驱动（PD 或 BAM），不能直接写 ctrl=角度
     prof = robot["_servo_profile"]
+    if bam_controller is not None:
+        sync_bam_target_state(bam_controller, pose)
     hold_pose_steps(
         m, d, pose, [j["name"] for j in robot["joints"]], prof, mujoco,
         int(seconds / m.opt.timestep),
+        actuator_model=actuator_model,
+        bam_controller=bam_controller,
     )
 
     quat_w = float(d.qpos[3])
@@ -78,7 +89,7 @@ def simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot) -> tuple[f
     return tilt, height, ke
 
 
-def solve(robot_name: str, cfg: dict, seconds: float, step: float) -> dict | None:
+def solve(robot_name: str, cfg: dict, seconds: float, step: float, actuator_model: str = "pd") -> dict | None:
     import mujoco
 
     robot = dict(cfg["robots"][robot_name])
@@ -94,6 +105,13 @@ def solve(robot_name: str, cfg: dict, seconds: float, step: float) -> dict | Non
     torso_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "torso")
     h_ref = float(robot["geometry"]["base_height_m"])
 
+    bam_ctrl = None
+    if actuator_model == "bam":
+        bam_ctrl = build_bam_controller(
+            robot["_servo_profile"], m, d,
+            [j["name"] for j in joints if not j.get("passive")],
+        )
+
     grid_h = np.arange(-0.60, 0.201, step)
     grid_k = np.arange(0.0, 1.001, step)
     results = []
@@ -107,7 +125,10 @@ def solve(robot_name: str, cfg: dict, seconds: float, step: float) -> dict | Non
             for i in range(len(joints))
         ):
             continue
-        tilt, height, ke = simulate(m, d, pose, qadr, act, seconds, mujoco, torso_id, robot)
+        tilt, height, ke = simulate(
+            m, d, pose, qadr, act, seconds, mujoco, torso_id, robot,
+            actuator_model=actuator_model, bam_controller=bam_ctrl,
+        )
         score = tilt + 1000.0 * abs(height / 1000.0 - h_ref) + 10.0 * ke
         results.append(
             {
@@ -157,12 +178,14 @@ def main() -> int:
     ap.add_argument("--robot", default=None)
     ap.add_argument("--seconds", type=float, default=1.0)
     ap.add_argument("--step", type=float, default=0.05, help="网格步长（rad）")
+    ap.add_argument("--actuator", default="pd", choices=["pd", "bam"],
+                    help="用哪种执行器模型求解（应与训练所用一致）")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(ROBOT_YAML.read_text(encoding="utf-8"))
     names = [args.robot] if args.robot else list(cfg["robots"])
     for n in names:
-        solve(n, cfg, args.seconds, args.step)
+        solve(n, cfg, args.seconds, args.step, args.actuator)
         print()
     return 0
 

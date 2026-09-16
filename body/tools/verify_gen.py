@@ -54,6 +54,10 @@ def check(cond: bool, msg: str) -> None:
     ok(msg) if cond else fail(msg)
 
 
+#: MuJoCo 执行器标签（我们是 <motor>：力矩语义，BAM 的硬性要求；见 DESIGN 3.4）
+ACTUATOR_TAGS = ("motor", "position", "velocity", "general")
+
+
 def body_and_joint_elements(root: ET.Element):
     """返回 (body 列表, 机器人关节列表, 执行器列表)，排除 <default> 模板块。"""
     default = root.find("default")
@@ -65,7 +69,7 @@ def body_and_joint_elements(root: ET.Element):
 
     bodies = [b for b in root.iter("body") if not in_default(b)]
     joints = [j for j in root.iter("joint") if not in_default(j)]
-    acts = [a for a in root.iter("position") if not in_default(a)]
+    acts = [a for a in root.iter() if a.tag in ACTUATOR_TAGS and not in_default(a)]
     return bodies, joints, acts
 
 

@@ -46,6 +46,11 @@ class RobotModel:
         self.safe_pose = list(r["safe_pose"])
         # 静态站立姿态：仿真初始状态用；缺省回退到 safe_pose
         self.stance_pose = list(r.get("stance_pose") or r["safe_pose"])
+        # 执行器模型默认值来自 robot.yaml 的 actuators 段（配置层单一来源）
+        actuators_cfg = cfg.get("actuators") or {}
+        self.actuator_default = str(actuators_cfg.get("default", "pd"))
+        self.actuator_fallback = bool(actuators_cfg.get("fallback_to_pd_on_error", True))
+        self.pose_solved_with = actuators_cfg.get("pose_solved_with")
         leg = [self.by_name[n] for n in self.leg_joints]
         self.leg_lo = min(j["lo"] for j in leg)
         self.leg_hi = max(j["hi"] for j in leg)
@@ -174,6 +179,10 @@ class MujocoPhysics:
         d.ctrl[:] = 0.0            # 力矩执行器：初始力矩置 0
         d.qvel[:] = 0.0
         mj.mj_forward(self.m, d)
+        if self.bam is not None:
+            from actuators import sync_bam_target_state
+
+            sync_bam_target_state(self.bam, stance)   # 限速平滑目标对齐初始姿态
         self.t = 0
 
     def step(self, target_pos: list[float], dt: float | None = None) -> None:
@@ -363,11 +372,28 @@ class StandEnv:
         self.refs = self.spec.reward_refs_for(self.model.raw)
         self.segments = self.spec.obs_segments()
         self.backend_name = backend
-        self.actuator_name = actuator_model
+        # 执行器模型选择（配置层单一来源：robot.yaml 的 actuators.default）
+        want = actuator_model
+        if want == "auto":
+            want = self.model.actuator_default
+        if want == "bam":
+            from actuators import bam_available
+
+            if not bam_available():
+                msg = (
+                    "BAM 不可用（需 Python ≥3.12 且安装 better-actuator-models[mujoco]；"
+                    "本机 python 3.11 不行）"
+                )
+                if self.model.actuator_fallback:
+                    print(f"[warn] {msg}，按 actuators.fallback_to_pd_on_error 回退 pd")
+                    want = "pd"
+                else:
+                    raise RuntimeError(msg)
+        self.actuator_name = want
         if backend == "mujoco":
             try:
                 self.physics = MujocoPhysics(
-                    self.model, self.dt, self.gait_period_s, actuator_model=actuator_model
+                    self.model, self.dt, self.gait_period_s, actuator_model=want
                 )
             except Exception as e:  # noqa: BLE001
                 print(f"[warn] MuJoCo 后端不可用（{e}），回退 NullPhysics")
@@ -509,14 +535,19 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="miniduck stand 环境自检")
     ap.add_argument("--robot", default="miniduck-S", choices=["miniduck-L", "miniduck-S"])
     ap.add_argument("--backend", default="mujoco", choices=["mujoco", "null"])
-    ap.add_argument("--actuator", default="pd", choices=["pd", "bam"],
-                    help="执行器模型：pd=力矩级PD基线，bam=电压+直流电机+M1-M6摩擦+掉压")
+    ap.add_argument("--actuator", default="auto", choices=["auto", "pd", "bam"],
+                    help="执行器模型：auto=按 robot.yaml 的 actuators.default；"
+                         "pd=力矩级PD基线；bam=电压+直流电机+M1-M6摩擦+掉压")
     ap.add_argument("--steps", type=int, default=200)
     args = ap.parse_args()
 
     env = StandEnv(args.robot, backend=args.backend, actuator_model=args.actuator)
     print(f"机型 {env.model.name}: 腿关节 {env.model.n_leg}, obs {env.obs_dim}, "
           f"act {env.model.act_dim}, 后端 {env.backend_name}, 执行器 {env.actuator_name}")
+    if env.model.pose_solved_with and env.model.pose_solved_with != env.actuator_name:
+        print(f"[warn] stance_pose 是在 {env.model.pose_solved_with} 下求解的，"
+              f"当前执行器为 {env.actuator_name} —— 可能不是静态平衡姿态，"
+              "建议重跑 solve_stance.py")
     from actuators import describe
 
     print(f"执行器配置: {describe(env.model.servo)}")
