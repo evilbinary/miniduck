@@ -292,16 +292,97 @@ def role_of_link(robot: dict, link_name: str) -> str:
     return "leg"
 
 
-#: 部位 → (geom 类型, size, rgba, 备注)。占位外形，TBD: 由 CAD 回填。
-#: 可视性目的：让出图能一眼辨认躯干/腿/头/喙/翅/尾，便于观察步态与姿态。
-ROLE_GEOM = {
-    "torso": ("box", (0.022, 0.030, 0.020), (0.30, 0.33, 0.38, 1.0)),
-    "leg":   ("capsule", (0.006, 0.012), (0.40, 0.60, 0.90, 1.0)),
-    "head":  ("sphere", (0.018,), (0.95, 0.85, 0.35, 1.0)),
-    "beak":  ("capsule", (0.004, 0.008), (0.95, 0.60, 0.20, 1.0)),
-    "wing":  ("box", (0.006, 0.020, 0.012), (0.90, 0.80, 0.30, 1.0)),
-    "tail":  ("capsule", (0.005, 0.012), (0.90, 0.55, 0.25, 1.0)),
+#: 鸭子配色（绿头/褐身/橙脚/黄嘴），仅视觉，不影响物理
+DUCK_RGBA = {
+    "body":  (0.42, 0.35, 0.28, 1.0),
+    "head":  (0.16, 0.45, 0.28, 1.0),
+    "bill":  (0.95, 0.75, 0.25, 1.0),
+    "leg":   (0.95, 0.55, 0.15, 1.0),
+    "wing":  (0.58, 0.52, 0.44, 1.0),
+    "tail":  (0.35, 0.28, 0.22, 1.0),
 }
+
+#: 按连杆名识别部位（比 role 更细：role=leg 里要区分大腿/蹼足）
+_SHAPE_RULES: list[tuple[tuple[str, ...], dict]] = [
+    (("beak", "bill"), dict(kind="bill")),
+    (("head",), dict(kind="head")),
+    (("neck",), dict(kind="head")),
+    (("wing",), dict(kind="wing")),
+    (("tail",), dict(kind="tail")),
+    (("foot", "toe"), dict(kind="foot")),
+]
+
+
+def _geom_base(link_name: str, role: str) -> dict:
+    """返回连杆的占位外形（type/size/rgba/pos/euler），尺寸基准 = S 版。
+
+    纯视觉：让出图能一眼看出鸭子部位与姿态（走位、重心、脚尖着地）。
+    尺寸与 CAD 无关，**质量与限位仍由 robot.yaml 决定**。
+    TBD: CAD 出图后替换为真实网格（mesh）。
+    """
+    low = link_name.lower()
+    kind = "torso" if role == "torso" else ("leg" if role == "leg" else role)
+    for keys, override in _SHAPE_RULES:
+        if any(k in low for k in keys):
+            kind = override["kind"]
+            break
+
+    if kind == "torso":                      # 卵形身体（前后更长）
+        return dict(type="ellipsoid", size=(0.040, 0.030, 0.026),
+                    rgba=DUCK_RGBA["body"], pos=(0.0, 0.0, 0.0))
+    if kind == "head":                       # 圆头/短颈
+        if "neck" in low:
+            return dict(type="capsule", size=(0.008, 0.012),
+                        rgba=DUCK_RGBA["head"], pos=(0.0, 0.0, 0.0))
+        return dict(type="sphere", size=(0.017,), rgba=DUCK_RGBA["head"],
+                    pos=(0.0, 0.0, 0.012))
+    if kind == "bill":                       # 扁平鸭嘴，向前伸出
+        return dict(type="box", size=(0.019, 0.011, 0.004),
+                    rgba=DUCK_RGBA["bill"], pos=(0.020, 0.0, 0.010))
+    if kind == "foot":
+        # 蹼足平板只加在**踝驱动的 foot** 上；脚趾（多为被动关节）只做小尖端，
+        # 否则一块大平板挂在自由铰链上会让支撑面变成"刀锋"，静态就站不住。
+        if "toe" in low:
+            return dict(type="box", size=(0.010, 0.014, 0.0025),
+                        rgba=DUCK_RGBA["leg"], pos=(0.008, 0.0, -0.002))
+        return dict(type="box", size=(0.020, 0.024, 0.0035),
+                    rgba=DUCK_RGBA["leg"], pos=(0.004, 0.0, -0.003))
+    if kind == "wing":                       # 折叠贴体
+        return dict(type="box", size=(0.020, 0.006, 0.014),
+                    rgba=DUCK_RGBA["wing"], pos=(0.0, 0.0, 0.002))
+    if kind == "tail":                       # 尾羽上翘
+        return dict(type="ellipsoid", size=(0.022, 0.014, 0.005),
+                    rgba=DUCK_RGBA["tail"], pos=(-0.018, 0.0, 0.010),
+                    euler=(0.0, 0.5, 0.0))
+    # 腿：细短（真实长度由 body/robot.yaml 的关节偏移决定，不是这里）
+    return dict(type="capsule", size=(0.005, 0.014), rgba=DUCK_RGBA["leg"],
+                pos=(0.0, 0.0, 0.0))
+
+
+def geom_for(link_name: str, role: str, scale: float = 1.0) -> dict:
+    """占位外形 + 按机型缩放（只缩放 geom，不动关节偏移与质量）。
+
+    L 是 7-DOF 研究版：静态站立依赖**结构冗余**（更宽髋距 + 更大支撑面），
+    由 robot.yaml 的 geometry.geom_scale 控制；步态中的侧向平衡仍由
+    hip_roll / ankle_roll 主动完成（见 DESIGN 3.1）。
+    """
+    d = _geom_base(link_name, role)
+    if abs(scale - 1.0) > 1e-9:
+        d["size"] = tuple(v * scale for v in d["size"])
+        if "pos" in d:
+            d["pos"] = tuple(v * scale for v in d["pos"])
+    return d
+
+
+def geom_attrs(g: dict) -> str:
+    """把 geom 描述转成 XML 属性串（pos/euler 为 0 时省略）。"""
+    s = f'type="{g["type"]}" size="{" ".join(f"{v:g}" for v in g["size"])}"'
+    s += f' rgba="{" ".join(f"{v:g}" for v in g["rgba"])}"'
+    if any(abs(v) > 1e-12 for v in g.get("pos", (0.0, 0.0, 0.0))):
+        s += f' pos="{" ".join(f"{v:g}" for v in g["pos"])}"'
+    if any(abs(v) > 1e-12 for v in g.get("euler", (0.0, 0.0, 0.0))):
+        s += f' euler="{" ".join(f"{v:g}" for v in g["euler"])}"'
+    return s
 
 
 def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
@@ -333,7 +414,7 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
         # 占位外形：capsule 需要 size = (radius, half-length) 两个分量，
         # 只给一个会被 MuJoCo 拒绝（size 1 must be positive）。
         # TBD: 由 CAD 回填各连杆真实尺寸后替换。
-        '    <geom type="capsule" size="0.006 0.012" density="800"/>',
+        '    <geom type="capsule" size="0.005 0.014" density="800"/>',
         '  </default>',
         '  <worldbody>',
         # plane 的 size = (半长, 半宽, 网格间距)，三分量
@@ -366,12 +447,10 @@ def gen_mjcf(robot_name: str, robot: dict, cfg: dict) -> str:
             )
         mass = (l.get("mass_g") or 10.0) / 1000.0
         role = role_of_link(robot, link_name)
-        gtype, size, rgba = ROLE_GEOM.get(role, ROLE_GEOM["leg"])
-        size_s = " ".join(f"{v:g}" for v in size)
-        rgba_s = " ".join(f"{v:g}" for v in rgba)
+        g = geom_for(link_name, role, scale=float(robot.get("geometry", {}).get("geom_scale", 1.0)))
         out.append(
-            f'{pad}  <geom name="{link_name}_geom" type="{gtype}" size="{size_s}" '
-            f'rgba="{rgba_s}" mass="{mass:.5f}"/>  <!-- {role} 占位外形，TBD: CAD 回填 -->'
+            f'{pad}  <geom name="{link_name}_geom" {geom_attrs(g)} '
+            f'mass="{mass:.5f}"/>  <!-- {role} 占位外形（鸭子造型，纯视觉），TBD: CAD 换 mesh -->'
         )
         for k in cmap.get(link_name, []):
             if k["link"]["name"] != link_name:

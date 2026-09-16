@@ -90,10 +90,13 @@ robots:
     servo: xl330_m077
     geometry:
       # 站立时躯干离地目标高度（reward 的 h_ref）
-      # 由 solve_stance.py 在 BAM(xl330,m6) 下求解为 0.1235 m（占位外形下可达值；
-      # 原声明 0.150 超出腿长范围，会让高度奖励永远达不到 1.0）
-      # ★ 几何/外形改动后必须重跑求解并回填（本次分部位外形调整后由 0.126 → 0.1235）
-      base_height_m: 0.1235
+      # 由 solve_stance.py 在 BAM(xl330,m6) 下求解后回填。
+      # ★ 几何/外形/质量改动后必须重跑求解并回填
+      base_height_m: 0.1351      # 由 solve_stance.py 求解（髋距加宽 + geom_scale 1.35 后）
+      # 外形缩放（只影响 geom 尺寸，不影响关节偏移与质量）
+      # L 是 7-DOF 研究版：静态站立靠**结构冗余**（更宽髋距 + 更大支撑面），
+      # 步态中才有 hip_roll/yaw 做侧向平衡与转向（见 DESIGN 3.1）
+      geom_scale: 1.35
     policy:
       # 策略动作向量顺序（= obs 中 joint 段顺序），也是 50 Hz 下发的关节
       leg_joints: [L_hip_yaw, L_hip_roll, L_hip_pitch, L_knee_pitch, L_ankle_pitch, L_ankle_roll, L_toe,
@@ -122,29 +125,29 @@ robots:
       - {name: R_toe,              parent_joint: R_toe,          mass_g: 3}     # TBD
     joints:
       # ---- 左腿链：torso → yaw → roll → pitch → 膝 → 踝pitch → 踝roll → 脚趾 (7) ----
-      - {name: L_hip_yaw,     id: 1,  role: leg, parent: torso,              child: L_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, 0.0]}    # xyz TBD
+      - {name: L_hip_yaw,     id: 1,  role: leg, parent: torso,              child: L_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.010, 0.042, -0.018]}    # 髋距加宽：7-DOF 研究版的静态支撑余量（见 geometry.geom_scale 注释）
       - {name: L_hip_roll,    id: 2,  role: leg, parent: L_hip_yaw_link,     child: L_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.20, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
-      - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh,            child: L_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
-      - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank,            child: L_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.20, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
+      - {name: L_hip_pitch,   id: 3,  role: leg, parent: L_hip_roll_link,    child: L_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: -0.30, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
+      - {name: L_knee_pitch,  id: 4,  role: leg, parent: L_thigh,            child: L_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.70, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 腿长恢复 + BAM 求解
+      - {name: L_ankle_pitch, id: 5,  role: leg, parent: L_shank,            child: L_ankle_pitch_link, axis: [0, 1, 0], lo: -1.60, hi: 1.60, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 限位放宽：矮胖短腿体型需要大踝行程
       - {name: L_ankle_roll,  id: 6,  role: leg, parent: L_ankle_pitch_link, child: L_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: L_toe,         id: 7,  role: leg, parent: L_foot,             child: L_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, -0.010], passive: true}  # xyz TBD
+      - {name: L_toe,         id: 7,  role: leg, parent: L_foot,             child: L_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.020, 0.0, -0.004], passive: true}  # xyz TBD
       # ---- 右腿链 (7) ----
-      - {name: R_hip_yaw,     id: 8,  role: leg, parent: torso,              child: R_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.030, 0.0, 0.0]}   # xyz TBD
+      - {name: R_hip_yaw,     id: 8,  role: leg, parent: torso,              child: R_hip_yaw_link,     axis: [0, 0, 1], lo: -0.80, hi: 0.80, default: 0.0,  zero_offset: 0.0, xyz: [-0.010, -0.042, -0.018]}   # 髋距加宽（同左）
       - {name: R_hip_roll,    id: 9,  role: leg, parent: R_hip_yaw_link,     child: R_hip_roll_link,    axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.20, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
-      - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh,            child: R_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
-      - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank,            child: R_ankle_pitch_link, axis: [0, 1, 0], lo: -1.00, hi: 1.00, default: -0.20, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # xyz TBD
+      - {name: R_hip_pitch,   id: 10, role: leg, parent: R_hip_roll_link,    child: R_thigh,            axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: -0.30, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}   # default 由 solve_stance.py 在 BAM 模型下求解
+      - {name: R_knee_pitch,  id: 11, role: leg, parent: R_thigh,            child: R_shank,            axis: [0, 1, 0], lo: 0.00,  hi: 2.40, default: 0.90, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 同左
+      - {name: R_ankle_pitch, id: 12, role: leg, parent: R_shank,            child: R_ankle_pitch_link, axis: [0, 1, 0], lo: -1.60, hi: 1.60, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.050]}  # 同左：放宽踝行程
       - {name: R_ankle_roll,  id: 13, role: leg, parent: R_ankle_pitch_link, child: R_foot,            axis: [1, 0, 0], lo: -0.40, hi: 0.40, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, 0.0]}
-      - {name: R_toe,         id: 14, role: leg, parent: R_foot,             child: R_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.030, 0.0, -0.010], passive: true}  # xyz TBD
+      - {name: R_toe,         id: 14, role: leg, parent: R_foot,             child: R_toe,             axis: [0, 1, 0], lo: -0.30, hi: 0.60, default: 0.0,  zero_offset: 0.0, xyz: [0.020, 0.0, -0.004], passive: true}  # xyz TBD
     # 三个姿态的职责区分（易混淆，务必分清）：
     #   stance_pose  静态站立姿态：仿真初始状态、悬挂/落地测试、站立基线
     #   default_pos  动作参考位（各关节 default 字段）：target = default + scale·action
     #   safe_pose    异常回位姿态：超时/跌倒/过热时下发
     # 实测结论（check_physics.py + duck_env）：default_pos 不是静态平衡姿态
     # （膝弯曲使质心前移，S 版 0.5 s 内前倾倒地），故另设 stance_pose。
-    stance_pose: [0.0, 0.0, 0.20, 0.0, -0.20, 0.0, 0.0,
-                  0.0, 0.0, 0.20, 0.0, -0.20, 0.0, 0.0]  # BAM(xl330, m6) 下求解：倾斜 1.95°，高度 125.5 mm
+    stance_pose: [0.0, 0.0, -0.30, 0.70, 0.0, 0.0, 0.0,
+                  0.0, 0.0, -0.30, 0.70, 0.0, 0.0, 0.0]  # 由 solve_stance.py 精确输出（顺序: yaw/roll/hip/knee/ankle/ankle_roll/toe）  # BAM(xl330,m6) 下求解：倾斜 1.34°，高度 130.2 mm（7-DOF 研究版靠结构冗余保静态）
     safe_pose: [0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]   # TBD: 标定后回填
 
@@ -157,7 +160,7 @@ robots:
       # 站立时躯干离地目标高度（reward 的 h_ref）：solve_stance.py 求解为 0.0875 m
       # （占位外形下可达值；原声明 0.100 超出腿长）
       # ★ 几何/外形改动后必须重跑求解并回填
-      base_height_m: 0.0875
+      base_height_m: 0.0743
     policy:
       # 策略只控制这 6 个腿关节（顺序 = 动作向量顺序）
       leg_joints: [L_hip_pitch, L_knee_pitch, L_ankle_pitch,
@@ -183,12 +186,12 @@ robots:
       - {name: R_wing,          parent_joint: R_wing,         mass_g: 6}    # TBD
     joints:
       # ---- 腿 (6)：仅矢状面，横向稳定靠结构（脚掌/髋距/配重），见 DESIGN 3.1 ----
-      - {name: L_hip_pitch,   id: 1,  role: leg,  parent: torso,   child: L_thigh,        axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0, xyz: [0.025, 0.0, 0.0]}   # xyz TBD
-      - {name: L_knee_pitch,  id: 2,  role: leg,  parent: L_thigh, child: L_shank,        axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.035]}   # xyz TBD（default=0：零动作即站立）
-      - {name: L_ankle_pitch, id: 3,  role: leg,  parent: L_shank, child: L_foot,         axis: [0, 1, 0], lo: -0.90, hi: 0.90, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, -0.035]}   # xyz TBD
-      - {name: R_hip_pitch,   id: 4,  role: leg,  parent: torso,   child: R_thigh,        axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0, xyz: [-0.025, 0.0, 0.0]}  # xyz TBD
-      - {name: R_knee_pitch,  id: 5,  role: leg,  parent: R_thigh, child: R_shank,        axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.035]}   # xyz TBD（default=0：零动作即站立）
-      - {name: R_ankle_pitch, id: 6,  role: leg,  parent: R_shank, child: R_foot,         axis: [0, 1, 0], lo: -0.90, hi: 0.90, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, -0.035]}   # xyz TBD
+      - {name: L_hip_pitch,   id: 1,  role: leg,  parent: torso,   child: L_thigh,        axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0, xyz: [-0.008, 0.026, -0.020]}   # xyz TBD；X 前后(−=靠后) / Y 侧向 / Z 上下
+      - {name: L_knee_pitch,  id: 2,  role: leg,  parent: L_thigh, child: L_shank,        axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.024]}   # xyz TBD（default=0：零动作即站立）
+      - {name: L_ankle_pitch, id: 3,  role: leg,  parent: L_shank, child: L_foot,         axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, -0.024]}   # 限位放宽（同 L 版理由）
+      - {name: R_hip_pitch,   id: 4,  role: leg,  parent: torso,   child: R_thigh,        axis: [0, 1, 0], lo: -1.10, hi: 1.10, default: 0.0,  zero_offset: 0.0, xyz: [-0.008, -0.026, -0.020]}  # xyz TBD；X 前后(−=靠后) / Y 侧向 / Z 上下
+      - {name: R_knee_pitch,  id: 5,  role: leg,  parent: R_thigh, child: R_shank,        axis: [0, 1, 0], lo: 0.00,  hi: 2.30, default: 0.00, zero_offset: 0.0, xyz: [0.0, 0.0, -0.024]}   # xyz TBD（default=0：零动作即站立）
+      - {name: R_ankle_pitch, id: 6,  role: leg,  parent: R_shank, child: R_foot,         axis: [0, 1, 0], lo: -1.20, hi: 1.20, default: 0.0,  zero_offset: 0.0, xyz: [0.0, 0.0, -0.024]}   # 限位放宽（同 L 版理由）
       # ---- 颈/头 (4)：朝向交互 + 表情 ----
       - {name: neck_pitch,    id: 7,  role: head, parent: torso,          child: neck,           axis: [0, 1, 0], lo: -0.50, hi: 0.70, default: 0.0, zero_offset: 0.0, xyz: [0.0, 0.0, 0.050], expressive: true}   # xyz TBD
       - {name: neck_yaw,      id: 8,  role: head, parent: neck,           child: neck_yaw_link,  axis: [0, 0, 1], lo: -0.90, hi: 0.90, default: 0.0, zero_offset: 0.0, xyz: [0.0, 0.0, 0.0],   expressive: true}

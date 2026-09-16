@@ -96,6 +96,61 @@ class DuckState:
 
 
 # --------------------------------------------------------------------------
+# 几何辅助：脚底最低点与"贴地对齐"
+# --------------------------------------------------------------------------
+def geom_lowest_point(m, d, mujoco, g: int) -> float:
+    """单个 geom 的最低点 z。
+
+    ★ 各类型的"下垂量"不同，写错会得到荒谬结论（实测踩过）：
+        box      → 垂直半高 size[2]（蹼足是 box，不是 capsule！按 size[1] 算会虚报 20 mm）
+        capsule  → 半长 + 半径（只减半长会虚报一个半径）
+        sphere   → 半径
+    """
+    size = m.geom_size[g]
+    gtype = m.geom_type[g]
+    if gtype == mujoco.mjtGeom.mjGEOM_BOX:
+        drop = float(size[2])
+    elif gtype == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        drop = float(size[0]) + float(size[1])
+    elif gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
+        drop = float(size[0])
+    else:
+        drop = float(size[2])
+    return float(d.geom_xpos[g][2]) - drop
+
+
+def is_foot_geom(m, mujoco, g: int) -> bool:
+    name = (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(m.geom_bodyid[g])) or "").lower()
+    return "foot" in name or "toe" in name
+
+
+def foot_lowest_point(m, d, mujoco) -> float:
+    """当前姿态下脚/脚趾 geom 的最低点 z。"""
+    lowest = float("inf")
+    for g in range(m.ngeom):
+        if is_foot_geom(m, mujoco, g):
+            lowest = min(lowest, geom_lowest_point(m, d, mujoco, g))
+    return lowest
+
+
+def align_to_ground(m, d, mujoco) -> float:
+    """把机体沿 Z 平移，使脚底恰好贴地，返回平移量。
+
+    出生高度必须**由当前姿态算出来**，不能用 robot.yaml 里手写的 base_height_m：
+    后者是奖励参考 h_ref（"希望站多高"），不是"这个姿态下脚在哪"。
+    两者不一致时，出生瞬间脚会穿地，接触约束把机器人弹出（实测末帧动能 0.127 J，
+    是正常着地的上千倍），表现为"标称姿态站不住"。
+    """
+    mujoco.mj_forward(m, d)
+    lowest = foot_lowest_point(m, d, mujoco)
+    if lowest == float("inf"):
+        return 0.0
+    d.qpos[2] -= lowest
+    mujoco.mj_forward(m, d)
+    return -lowest
+
+
+# --------------------------------------------------------------------------
 # 物理后端：MuJoCo
 # --------------------------------------------------------------------------
 class MujocoPhysics:
@@ -179,6 +234,8 @@ class MujocoPhysics:
         d.ctrl[:] = 0.0            # 力矩执行器：初始力矩置 0
         d.qvel[:] = 0.0
         mj.mj_forward(self.m, d)
+        # 出生高度按姿态算（脚底贴地），避免穿地弹出——见 align_to_ground 注释
+        align_to_ground(self.m, d, mj)
         if self.bam is not None:
             from actuators import sync_bam_target_state
 

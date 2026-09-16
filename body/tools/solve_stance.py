@@ -34,6 +34,7 @@ from actuators import (  # noqa: E402
     hold_pose_steps,
     sync_bam_target_state,
 )
+from duck_env import align_to_ground  # noqa: E402
 
 
 def leg_joints(robot: dict) -> tuple[list[str], list[str], list[str], dict[str, int]]:
@@ -58,9 +59,25 @@ def joint_addrs(m, mujoco, joint_names: list[str]):
     return qadr, act
 
 
+def spawn_z_estimate(robot: dict) -> float:
+    """按腿部运动链估算出生高度（躯干离地）。
+
+    不要依赖 robot.yaml 里的 base_height_m：它是"上次求解的结果"，
+    几何一改就过期；用过期值出生会让机器人先自由落体再着地，
+    求解器会把"摔"误判成"姿态不稳"（实测 L 版就这样误报过）。
+    估算 = 沿腿链的 |z 偏移| 之和 + 脚掌厚度余量。
+    """
+    leg = [j for j in robot["joints"] if j.get("role") == "leg"]
+    # 只沿**一条**链路求和：左右腿是镜像的，全加起来会翻倍
+    left = [j for j in leg if j["name"].startswith("L_")]
+    chain = left or leg
+    total = sum(abs(float((j.get("xyz") or [0.0, 0.0, 0.0])[2])) for j in chain)
+    return max(0.03, total + 0.006)
+
+
 def simulate(
     m, d, pose, qadr, act, seconds, mujoco, torso_id, robot,
-    actuator_model="pd", bam_controller=None,
+    actuator_model="pd", bam_controller=None, spawn_z: float | None = None,
 ) -> tuple[float, float, float]:
     """把关节设到 pose 静置 seconds 秒，返回 (最终倾斜°, 躯干高度 mm, 动能 J)。"""
     mujoco.mj_resetData(m, d)
@@ -70,6 +87,10 @@ def simulate(
     d.ctrl[:] = 0.0
     d.qvel[:] = 0.0
     mujoco.mj_forward(m, d)
+    # ★ 出生方式必须与运行时（env / check_physics）完全一致：脚底贴地对齐。
+    # 曾经用"按运动链估算出生高度"覆盖 qpos[2]，导致脚先穿地、被接触约束弹出，
+    # 落到另一个构型后误判为"稳定"（实测把脚在质心前方 5 cm 的姿态标成了稳定解）。
+    align_to_ground(m, d, mujoco)
 
     # 力矩执行器：必须按力矩语义驱动（PD 或 BAM），不能直接写 ctrl=角度
     prof = robot["_servo_profile"]
@@ -112,22 +133,45 @@ def solve(robot_name: str, cfg: dict, seconds: float, step: float, actuator_mode
             [j["name"] for j in joints if not j.get("passive")],
         )
 
-    grid_h = np.arange(-0.60, 0.201, step)
-    grid_k = np.arange(0.0, 1.001, step)
+    z_est = spawn_z_estimate(robot)
+    print(f"  按运动链估算出生高度 z={z_est * 1000:.1f} mm"
+          f"（robot.yaml 现值 {h_ref * 1000:.1f} mm，若差距大说明需回填）")
+
+    # 搜索范围由关节实际限位推导，**不要硬编码**：
+    # 实测 L 版（矮胖短腿）的稳定区在 knee≈1.2~1.4 rad，硬编码 0~1.0 会
+    # 直接漏掉整个可行域，得出"站不住"的错误结论。
+    hip_lim = [joints[idx[n]] for n in hips]
+    knee_lim = [joints[idx[n]] for n in knees]
+    h_lo = max(j["lo"] for j in hip_lim)
+    h_hi = min(j["hi"] for j in hip_lim)
+    k_lo = max(j["lo"] for j in knee_lim)
+    k_hi = min(j["hi"] for j in knee_lim)
+    grid_h = np.arange(h_lo, h_hi + 1e-9, step)
+    grid_k = np.arange(k_lo, k_hi + 1e-9, step)
+    print(f"  搜索范围（按限位）：hip {h_lo:+.2f}~{h_hi:+.2f}，knee {k_lo:+.2f}~{k_hi:+.2f}，"
+          f"步长 {step}")
+    # 踝关节补偿族：保持脚掌贴地需要"髋+膝"的补偿，但符号约定因机型而异
+    # （实测：只试 ankle=-(hip+knee) 会整族落在"脚不平"的姿态上，L 版因此假报无解）。
+    # 这里显式枚举几种常见约定，代价仅 4 倍。
+    def ankle_candidates(hip: float, knee: float) -> list[float]:
+        return [-(hip + knee), -(hip - knee), -hip + knee, 0.0]
+
     results = []
     for hip, knee in itertools.product(grid_h, grid_k):
-        ankle = -(hip + knee)
-        pose = [0.0] * len(joints)
-        for h, k, a in zip(hips, knees, ankles):
-            pose[idx[h]], pose[idx[k]], pose[idx[a]] = float(hip), float(knee), float(ankle)
-        if any(
-            pose[i] < joints[i]["lo"] - 1e-9 or pose[i] > joints[i]["hi"] + 1e-9
-            for i in range(len(joints))
-        ):
-            continue
+        for ankle in ankle_candidates(hip, knee):
+            if not (-3.15 <= ankle <= 3.15):
+                continue
+            pose = [0.0] * len(joints)
+            for h, k, a in zip(hips, knees, ankles):
+                pose[idx[h]], pose[idx[k]], pose[idx[a]] = float(hip), float(knee), float(ankle)
+            if any(
+                pose[i] < joints[i]["lo"] - 1e-9 or pose[i] > joints[i]["hi"] + 1e-9
+                for i in range(len(joints))
+            ):
+                continue
         tilt, height, ke = simulate(
             m, d, pose, qadr, act, seconds, mujoco, torso_id, robot,
-            actuator_model=actuator_model, bam_controller=bam_ctrl,
+            actuator_model=actuator_model, bam_controller=bam_ctrl, spawn_z=z_est,
         )
         score = tilt + 1000.0 * abs(height / 1000.0 - h_ref) + 10.0 * ke
         results.append(

@@ -29,12 +29,17 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ROBOT_YAML = ROOT / "body" / "robot.yaml"
 
-sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层
+sys.path.insert(0, str(ROOT / "train" / "envs"))          # 复用执行器模型层与几何辅助
 from actuators import (  # noqa: E402
     bam_available,
     build_bam_controller,
     hold_pose_steps,
     sync_bam_target_state,
+)
+from duck_env import (  # noqa: E402
+    align_to_ground,
+    geom_lowest_point,
+    is_foot_geom,
 )
 
 
@@ -66,31 +71,18 @@ def note(m: str) -> None:
 
 
 def foot_lowest_z(m, d) -> tuple[float, str]:
-    """当前姿态下所有"脚"相关 geom 的最低点 z 与其所属 body 名。
-
-    注意 capsule 的下沿是 中心 − (半长 + 半径)：只减半长会漏掉半径，
-    得出"脚悬空"的假结论（半径 8 mm 时误差正好 8 mm）。
-    """
+    """脚底最低点 z 与其所属 body 名（几何分量处理复用 duck_env，避免两处各写一遍）。"""
     import mujoco
 
     mujoco.mj_forward(m, d)
     lowest, who = float("inf"), ""
     for g in range(m.ngeom):
-        b = m.geom_bodyid[g]
-        name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b) or ""
-        if "foot" not in name.lower() and "toe" not in name.lower():
+        if not is_foot_geom(m, mujoco, g):
             continue
-        gtype = m.geom_type[g]
-        size = m.geom_size[g]
-        if gtype == mujoco.mjtGeom.mjGEOM_CAPSULE:
-            drop = float(size[1]) + float(size[0])          # 半长 + 半径
-        elif gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
-            drop = float(size[0])
-        else:
-            drop = float(size[1]) if len(size) > 1 else 0.0
-        z = float(d.geom_xpos[g][2]) - drop
+        z = geom_lowest_point(m, d, mujoco, g)
         if z < lowest:
-            lowest, who = z, name
+            lowest = z
+            who = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, int(m.geom_bodyid[g])) or ""
     return lowest, who
 
 
@@ -100,6 +92,10 @@ def set_pose(m, d, robot: dict, mujoco) -> None:
     注意：不能用 MuJoCo 默认全零姿态做落地测试——那与训练起始状态不一致，
     会得出误导性结论（例如"出生悬空""1 s 后倾倒"，而 stance_pose 下其实是稳的）。
     """
+    # ★ 必须整体重置：否则会带着上一次仿真（例如另一种执行器模型下已经摔倒的
+    #   位姿与速度）继续跑，出生姿态就不是 stance_pose 了，接触约束会把人弹飞
+    #   （实测动能 4.1 J ≈ 5 m/s 弹射，被误读成"姿态站不住"）。
+    mujoco.mj_resetData(m, d)
     pose = robot.get("stance_pose") or [j["default"] for j in robot["joints"]]
     for i, j in enumerate(robot["joints"]):
         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j["name"])
@@ -107,6 +103,9 @@ def set_pose(m, d, robot: dict, mujoco) -> None:
             d.qpos[int(m.jnt_qposadr[jid])] = pose[i]
     d.ctrl[:] = 0.0
     d.qvel[:] = 0.0
+    mujoco.mj_forward(m, d)
+    # 出生高度按姿态算出（脚底贴地）——不要用 robot.yaml 里手写的 base_height_m
+    align_to_ground(m, d, mujoco)
 
 
 def check_robot(name: str, cfg: dict, models: list[str]) -> None:

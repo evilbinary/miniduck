@@ -58,6 +58,53 @@ def scripted_action(env: StandEnv, t: float, kind: str) -> list[float]:
     return out
 
 
+#: 相机预设：从不同方向看才能看清不同问题
+#:   side  侧视（看前后重心与脚掌位置）——判断前后失衡
+#:   front 前视（看左右对称与髋距）——判断侧向失衡
+#:   top   俯视（看支撑多边形与质心投影是否在里面）
+CAMERAS = {
+    "iso": (135.0, -20.0),
+    "side": (90.0, -5.0),
+    "front": (0.0, -5.0),
+    "top": (90.0, -89.0),
+}
+
+
+def apply_camera(cam, env: StandEnv, kind: str, lookat_z: float) -> None:
+    az, el = CAMERAS.get(kind, CAMERAS["iso"])
+    cam.azimuth, cam.elevation = az, el
+    cam.distance = camera_distance(env)
+    cam.lookat[:] = [0.0, 0.0, lookat_z]
+
+
+def balance_report(m, d, env: StandEnv) -> str:
+    """质心投影 vs 支撑多边形：数值版的"为什么站不稳"。
+
+    支撑点取与地面接触的接触点；质心取各 body 质量加权位置（世界系）。
+    结论判据：质心投影必须落在支撑多边形内，越靠边越不稳。
+    """
+    import mujoco
+
+    floor = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    pts = [d.contact[c].pos.copy() for c in range(d.ncon)
+           if floor in (int(d.contact[c].geom1), int(d.contact[c].geom2))]
+    mass = float(np.sum(m.body_mass))
+    com = np.sum(m.body_mass[:, None] * d.xipos, axis=0) / mass
+    if not pts:
+        return f"COM=({com[0] * 1000:+.1f},{com[1] * 1000:+.1f})mm  无地面接触"
+    P = np.array(pts)
+    mx, Mx = P[:, 0].min(), P[:, 0].max()
+    my, My = P[:, 1].min(), P[:, 1].max()
+    cx, cy = com[0], com[1]
+    inside = (mx - 1e-6 <= cx <= Mx + 1e-6) and (my - 1e-6 <= cy <= My + 1e-6)
+    return (
+        f"COM=({cx * 1000:+.1f},{cy * 1000:+.1f})mm  "
+        f"支撑区 X[{mx * 1000:+.1f},{Mx * 1000:+.1f}] Y[{my * 1000:+.1f},{My * 1000:+.1f}]mm  "
+        f"前后余量={min(cx - mx, Mx - cx) * 1000:+.1f}mm 侧向余量={min(cy - my, My - cy) * 1000:+.1f}mm  "
+        f"{'在支撑区内 ✓' if inside else '★质心出界→必倒'}"
+    )
+
+
 def camera_distance(env: StandEnv) -> float:
     """按机身体积取景：机器人只有几厘米，固定 1 m 相机距离会小得看不清。"""
     h = float(env.refs["h_ref_m"])
@@ -84,10 +131,7 @@ def run_interactive(env: StandEnv, args) -> int:
 
     cam = mujoco.MjvCamera()
     mujoco.mjv_defaultFreeCamera(m, cam)
-    cam.distance = camera_distance(env)      # 按机身体积自动取景（机器人只有几厘米）
-    cam.azimuth = 135.0
-    cam.elevation = -20.0
-    cam.lookat[:] = [0.0, 0.0, env.refs["h_ref_m"]]
+    apply_camera(cam, env, args.camera, env.refs["h_ref_m"])
 
     dt = env.dt
     print("窗口已打开：拖动鼠标旋转、滚轮缩放、右键平移，关闭窗口结束。")
@@ -126,10 +170,7 @@ def run_render(env: StandEnv, args) -> int:
 
     cam = mujoco.MjvCamera()
     mujoco.mjv_defaultFreeCamera(m, cam)
-    cam.distance = camera_distance(env)
-    cam.azimuth = 135.0
-    cam.elevation = -20.0
-    cam.lookat[:] = [0.0, 0.0, float(d.qpos[2])]
+    apply_camera(cam, env, args.camera, float(d.qpos[2]))
 
     # 离屏缓冲默认 640×480；MJCF 里已声明 offwidth/offheight=1280×960。
     # 若模型没带该声明（旧生成物），自动退到 640×480 并提示。
@@ -159,7 +200,7 @@ def run_render(env: StandEnv, args) -> int:
                 env.reset()
         s = info["state"]
         heights.append(s.base_height)
-        cam.lookat[:] = [0.0, 0.0, s.base_height]
+        apply_camera(cam, env, args.camera, s.base_height)
         renderer.update_scene(d, camera=cam)
         img = Image.fromarray(renderer.render())
         frames.append(img)
@@ -173,6 +214,8 @@ def run_render(env: StandEnv, args) -> int:
           f"耗时 {time.time() - t0:.1f}s")
     print(f"  躯干高度 {min(heights_mm):.1f}–{max(heights_mm):.1f} mm（h_ref "
           f"{env.refs['h_ref_m'] * 1000:.0f} mm）")
+    if args.diag:
+        print("  平衡诊断（末帧）:", balance_report(m, d, env))
 
     if args.gif:
         gif = out_dir / f"{env.model.name}_{env.actuator_name}_{args.action}.gif"
@@ -191,6 +234,10 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=3.0, help="render 模式时长")
     ap.add_argument("--out", default="train/runs/view", help="render 模式输出目录")
     ap.add_argument("--gif", action="store_true", help="render 模式额外存 GIF")
+    ap.add_argument("--camera", default="iso", choices=list(CAMERAS),
+                    help="iso 总览 / side 侧视 / front 前视 / top 俯视")
+    ap.add_argument("--diag", action="store_true",
+                    help="打印质心投影与支撑多边形（数值版平衡诊断）")
     args = ap.parse_args()
 
     env = StandEnv(args.robot, backend="mujoco", actuator_model=args.actuator)
