@@ -43,11 +43,12 @@ let safe_joint(target, cur, temp) =
 
 let from_action(a, d) = d + action_scale * a in
 
+-- 接口约定：每个段参数都是 list（含单元素段），见 DESIGN 6.1
 let build_obs(ang_vel, grav, cmd, jpos, jvel, last_action,
               contact, phase, base_h, euler, lin_vel) =
   append(append(append(append(ang_vel, grav), cmd),
                 append(append(append(jpos, jvel), last_action), contact)),
-         append(append(append(phase, cons(base_h, [])), euler), lin_vel)) in
+         append(append(append(phase, base_h), euler), lin_vel)) in
 
 -- 测试辅助：重复列表（模拟 14 维腿向量）
 let rep(v, n) = if n == 0 then [] else cons(v, rep(v, n - 1)) in
@@ -70,19 +71,19 @@ let _ = check("stuck_step 清零", stuck_step(3, [0.1, 0.2]) == 0) in
 let _ = check("obs 维度 = 61", len(build_obs(
       [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
       rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
-      rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2))) == 61) in
+      rep(0.0, 2), [0.0], rep(0.0, 3), rep(0.0, 2))) == 61) in
 let _ = check("obs 段顺序 index9 = joint_pos 起点",
       nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
           cons(42.0, rep(0.0, 13)), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
-          rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2)), 9) > 41.999) in
+          rep(0.0, 2), [0.0], rep(0.0, 3), rep(0.0, 2)), 9) > 41.999) in
 let _ = check("obs 段顺序 index8 = command 末位",
       nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
           rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
-          rep(0.0, 2), 0.0, rep(0.0, 3), rep(0.0, 2)), 8) > 8.999) in
+          rep(0.0, 2), [0.0], rep(0.0, 3), rep(0.0, 2)), 8) > 8.999) in
 let _ = check("obs 段顺序 index60 = lin_vel 末位",
       nth(build_obs([1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],
           rep(0.0, 14), rep(0.0, 14), rep(0.0, 14), rep(0.0, 2),
-          rep(0.0, 2), 0.0, rep(0.0, 3), cons(0.0, [7.7])), 60) > 7.699) in
+          rep(0.0, 2), [0.0], rep(0.0, 3), cons(0.0, [7.7])), 60) > 7.699) in
 
 -- 顶层尾表达式
 ()

@@ -77,3 +77,4 @@ dkms.conf
 
 # debug information files
 *.dwo
+train/envs/__pycache__/*.pyc

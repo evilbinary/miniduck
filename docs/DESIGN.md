@@ -369,11 +369,13 @@ let map3(f, xs, ys, zs) =
             map3(f, tail(xs), tail(ys), tail(zs))) in
 
 -- ---------------- 观测构建（4.1 节；L 版 61 维 / S 版 37 维，与训练 spec 同一来源） ----------------
+-- 接口约定：**每个段参数都是 list**（含单元素段），避免标量/列表混用导致
+--           两端嵌套层级不一致（此类 bug 极隐蔽，由 obs 对拍测试把关）。
 let build_obs(ang_vel, grav, cmd, jpos, jvel, last_action,
               contact, phase, base_h, euler, lin_vel) =
   append(append(append(append(ang_vel, grav), cmd),
                 append(append(append(jpos, jvel), last_action), contact)),
-         append(append(append(phase, cons(base_h, [])), euler), lin_vel)) in
+         append(append(append(phase, base_h), euler), lin_vel)) in
 -- 维度核对：3+3+3 + N+N+N+2 + 2+1+3+2（N = N_LEG；L: N=14 → 61，S: N=6 → 37）
 
 -- ---------------- 安全层（纯函数） ----------------
@@ -428,7 +430,8 @@ let loop(t, last_action, pc, ps, stuck_n) =
       let phase   = cons(pc, cons(ps, [])) in     -- [cos, sin]
       let obs = build_obs(imu_ang_vel(imu), imu_grav(imu), cmd,
                           jpos, jvel, last_action,
-                          contact, phase, base_height_estimate(),
+                          contact, phase,
+                          cons(base_height_estimate(), []),   -- 单元素段也传 list
                           euler, base_lin_vel_estimate()) in
       let raw = io_policy_run("obs", obs) in -- 推理失败返回 nil
       if raw == nil then
