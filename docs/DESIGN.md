@@ -490,7 +490,7 @@ loop(0, safe_pose, 1.0, 0.0, 0)    -- 初始相位 (cos, sin) = (1, 0)，过载�
 
 | 阶段 | 内容 | 产出 |
 |------|------|------|
-| M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`，可仿真模型 |
+| M1 | 3D 建模 + 关节定义 + URDF/MJCF 导出 + **总线带宽/舵机规格实测** | `body/cad/`、`body/robot.yaml`、`gen.py`/`verify_gen.py`（18 项校验通过），可仿真模型 |
 | M2 | yac 规范层（obs/reward/scale/随机化）+ Python 仿真环境加载规范 | `mind/spec/`，`train/` 单机可跑；纯函数核心冒烟测试 `mind/tests/` 通过（ANF/CPS 一致） |
 | M3 | PPO 训练 + 双产物导出 | 部署权重 `policy.blob`（+ 中间格式 `policy.onnx`） |
 | M3.5 | yac 交叉验证：迷你 MLP 前向比对 ONNX 输出 | `verify/`，逐帧一致 |
@@ -516,6 +516,9 @@ miniduck/
 │
 ├── body/                        # 「身体」—— 硬件与 3D 建模（L/S 两版）
 │   ├── robot.yaml               # ★ 关节定义单一来源：DOF/限位/零位/舵机 ID/版本区分
+│   ├── tools/                   # ★ 生成器与回归校验
+│   │   ├── gen.py               #   robot.yaml → URDF/MJCF/joints.yac/consts.yac + 9 条校验
+│   │   └── verify_gen.py        #   生成产物回归测试（URDF/MJCF 结构 + yac 可执行性）
 │   ├── cad/                     # 3D 模型源文件（STEP / Fusion / Onshape 导出）
 │   ├── urdf/                    # 由 robot.yaml 生成 → 训练仿真用（生成物，可重建）
 │   ├── mjcf/                    # 由 robot.yaml 生成 → MuJoCo 用（生成物，可重建）
@@ -524,14 +527,22 @@ miniduck/
 │
 ├── mind/                        # 「心智」—— 真机软件（yac，运行在 yiyiya OS）
 │   ├── spec/                    # ★ yac 单一来源规范：obs 定义/reward/action_scale/域随机化
+│   │   ├── obs.yac              #   观测段表 / 维度公式 / 缺失策略 / 处理流水线
+│   │   ├── action.yac           #   动作映射 / 安全层阈值 / 表情关节参数
+│   │   ├── reward.yac           #   奖励项权重 / 终止条件 / 课程
+│   │   ├── randomize.yac        #   域随机化清单 / 三阶段课程 / 一致性硬约束
+│   │   ├── ppo.yac              #   PPO 超参 / 网络结构 / 复现元数据
+│   │   └── joints.generated.yac #   由 gen.py 生成（不入库）
 │   ├── robotd/                  # 50 Hz 控制循环（robotd.yac + 宿主边界原语）
 │   │   ├── robotd.yac           #   纯函数核心：build_obs / safe_joint / 动作映射
+│   │   ├── consts.generated.yac #   由 gen.py 生成（不入库）
 │   │   └── host/                #   宿主扩展原语：总线读写、IMU、时钟、watchdog（C）
 │   ├── expression/              # 表情任务（S 版）：颈/喙/尾/翅 ~20 Hz，与控制环合流
 │   ├── policy/                  # 部署端推理：policy_blob 权重 + 自研 MLP runtime（C）
 │   ├── mindd/                   # 高层意图（vx, vy, yaw_rate）
 │   ├── updaterd/                # OTA 打包 + 回滚槽位
-│   └── tests/                   # ANF/CPS 双解释器一致性校验、安全层单元测试
+│   └── tests/                   # 纯函数核心冒烟测试（ANF/CPS 一致）、安全层单测
+│       └── robotd_core_smoke.yac
 │
 ├── train/                       # 训练侧（Python + GPU，只在训练 PC 上）
 │   ├── envs/                    # MuJoCo/MJX/Warp 环境，从 spec/ 翻译加载规范

@@ -1,7 +1,9 @@
 # ===== miniduck 项目约定 =====
-# 生成物：由 body/robot.yaml 生成，可重建，不入库
+# 生成物：由 body/robot.yaml 经 body/tools/gen.py 生成，可重建，不入库
 body/urdf/
 body/mjcf/
+mind/spec/joints.generated.yac
+mind/robotd/consts.generated.yac
 
 # 训练产物与缓存
 train/runs/
