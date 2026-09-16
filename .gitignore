@@ -1,3 +1,25 @@
+# ===== miniduck 项目约定 =====
+# 生成物：由 body/robot.yaml 生成，可重建，不入库
+body/urdf/
+body/mjcf/
+
+# 训练产物与缓存
+train/runs/
+train/wandb/
+train/__pycache__/
+*.onnx
+*.blob
+*.ckpt
+
+# yac 编译产物
+*.yacrt
+*.yac.ckpt
+
+# 系统与工具
+.DS_Store
+Thumbs.db
+
+# ===== C/C++ 模板 =====
 # Prerequisites
 *.d
 
